@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="200dp"
+    android:minHeight="100dp"
+    android:minResizeWidth="160dp"
+    android:minResizeHeight="80dp"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_lockscreen"
+    android:initialKeyguardLayout="@layout/widget_lockscreen"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="keyguard|home_screen"
+    android:description="@string/widget_lockscreen_description" />

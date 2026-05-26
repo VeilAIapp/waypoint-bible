@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Waypoint</string>
+    <string name="widget_small_description">Daily verse widget — shows today\'s verse and reference</string>
+    <string name="widget_medium_description">Daily verse with streak counter — resizable</string>
+    <string name="widget_large_description">Daily verse, streak, and Companion shortcut (Waypoint Pro)</string>
+    <string name="widget_lockscreen_description">Daily verse on your lock screen — tap to open Waypoint</string>
+</resources>
