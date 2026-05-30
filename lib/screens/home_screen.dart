@@ -31,19 +31,57 @@ class _HomeScreenState extends State<HomeScreen> {
   int _streak = 0;
   late Map<String, String> _todayVerse;
 
-  static const List<Map<String, String>> _prompts = [
-    {'label': 'I need peace today', 'prompt': 'I need peace today. What does Scripture say about finding peace?'},
-    {'label': 'Help me understand prayer', 'prompt': 'Help me understand prayer. What does the Bible say about how and why we pray?'},
-    {'label': 'What does the Bible say about hope?', 'prompt': 'What does the Bible say about hope? I could use some encouragement.'},
-    {'label': 'I\'m going through something hard', 'prompt': 'I\'m going through something really hard right now. What does Scripture say about suffering and getting through difficult seasons?'},
+  static const List<Map<String, String>> _promptPool = [
     {'label': 'Where should I start reading?', 'prompt': 'I\'m not sure where to start reading the Bible. Can you help me figure out where to begin?'},
+    {'label': 'Help me understand a verse', 'prompt': 'I\'d like help understanding a Bible verse. Can you walk me through what it means?'},
+    {'label': 'I have a question about faith', 'prompt': 'I have a question about faith that I\'ve been thinking about. Can you help me think through it?'},
+    {'label': 'Does the Old Testament point to Jesus?', 'prompt': 'Does the Old Testament point to Jesus? I\'d love to understand how the Hebrew Scriptures anticipate Christ.'},
+    {'label': 'What is the gospel in one sentence?', 'prompt': 'What is the gospel? Can you summarize it in one sentence?'},
+    {'label': 'Who wrote the Bible?', 'prompt': 'Who wrote the Bible? I\'m curious about its human authors and how it came together.'},
+    {'label': 'What did Jesus mean by Kingdom of God?', 'prompt': 'What did Jesus mean by the Kingdom of God? He talked about it constantly — what was he describing?'},
+    {'label': 'Why are there four Gospels?', 'prompt': 'Why are there four Gospels? Why did the early church preserve four accounts instead of one?'},
+    {'label': 'What is grace?', 'prompt': 'What is grace? I hear the word a lot in church but want to understand what it really means.'},
+    {'label': 'Who was Paul before he met Jesus?', 'prompt': 'Who was Paul before he met Jesus? What was his background and why does it matter?'},
+    {'label': 'What is the Holy Spirit?', 'prompt': 'What is the Holy Spirit? I want to understand who the Spirit is and what the Spirit does.'},
+    {'label': 'Did the disciples doubt Jesus?', 'prompt': 'Did the disciples doubt Jesus? I\'m curious whether they really believed or struggled like I do.'},
+    {'label': 'What does it mean to be saved?', 'prompt': 'What does it mean to be saved? I want to understand salvation beyond just a simple answer.'},
+    {'label': 'Why did Jesus speak in parables?', 'prompt': 'Why did Jesus speak in parables? What was he trying to accomplish by teaching that way?'},
+    {'label': 'What happened between the Testaments?', 'prompt': 'What happened between the Old and New Testaments? There\'s a 400-year gap — what went on?'},
+    {'label': 'What happened to Lazarus after death?', 'prompt': 'What happened to Lazarus after Jesus raised him from the dead? Does the Bible tell us?'},
+    {'label': 'What became of Jesus\' disciples?', 'prompt': 'What happened to the disciples after Jesus died and rose? Where did they go and what did they do?'},
+    {'label': 'Why did God choose Abraham?', 'prompt': 'Why did God choose Abraham? What made him significant and why does his story matter so much?'},
+    {'label': 'What is the armor of God?', 'prompt': 'What is the armor of God from Ephesians 6? What does each piece represent?'},
+    {'label': 'Who was Melchizedek?', 'prompt': 'Who was Melchizedek? He appears briefly in Genesis and Hebrews keeps referring back to him.'},
   ];
+
+  List<Map<String, String>> _selectedPrompts = [];
 
   @override
   void initState() {
     super.initState();
     _todayVerse = getDailyVerse();
+    _selectPrompts();
     _updateStreak();
+  }
+
+  void _selectPrompts() {
+    final lastShown = widget.prefs.getStringList('last_shown_prompts') ?? [];
+    final lastShownSet = Set<String>.from(lastShown);
+
+    final others = _promptPool.where((p) => !lastShownSet.contains(p['label'])).toList();
+    final recent = _promptPool.where((p) => lastShownSet.contains(p['label'])).toList();
+
+    final rng = math.Random();
+    others.shuffle(rng);
+    recent.shuffle(rng);
+
+    final selected = [...others, ...recent].take(3).toList();
+
+    widget.prefs.setStringList(
+      'last_shown_prompts',
+      selected.map((p) => p['label']!).toList(),
+    );
+    _selectedPrompts = selected;
   }
 
   void _updateStreak() {
@@ -289,10 +327,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: 44,
                     child: ListView.separated(
                       scrollDirection: Axis.horizontal,
-                      itemCount: _prompts.length,
+                      itemCount: _selectedPrompts.length,
                       separatorBuilder: (_, _) => const SizedBox(width: 8),
                       itemBuilder: (context, index) {
-                        final p = _prompts[index];
+                        final p = _selectedPrompts[index];
                         return GestureDetector(
                           onTap: () =>
                               _openChatWithPrompt(context, p['prompt']!),

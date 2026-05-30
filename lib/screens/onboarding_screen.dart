@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:purchases_ui_flutter/purchases_ui_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../constants.dart';
 import '../theme/app_theme.dart';
@@ -80,6 +81,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
       final streamedResponse =
           await client.send(request).timeout(const Duration(seconds: 30));
+
+      if (streamedResponse.statusCode != 200) {
+        throw Exception('API error ${streamedResponse.statusCode}');
+      }
 
       if (mounted) setState(() => _aiLoading = false);
       _startCharTimer();
@@ -160,6 +165,29 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         curve: Curves.easeInOut,
       );
       setState(() => _currentPage++);
+    }
+  }
+
+  bool _trialLoading = false;
+
+  Future<void> _startTrial() async {
+    if (_trialLoading) return;
+    setState(() => _trialLoading = true);
+    try {
+      final result =
+          await RevenueCatUI.presentPaywall(displayCloseButton: true);
+      if (!mounted) return;
+      if (result == PaywallResult.purchased ||
+          result == PaywallResult.restored) {
+        _complete();
+      } else {
+        // Dismissed without purchasing — stay on the page so they can
+        // tap "Maybe later" to continue free.
+        setState(() => _trialLoading = false);
+      }
+    } catch (_) {
+      // RevenueCat error — don't block onboarding, just continue free.
+      if (mounted) _complete();
     }
   }
 
@@ -557,7 +585,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           const Spacer(),
           _PrimaryButton(
             label: 'Start 7 Days Free',
-            onTap: _complete,
+            onTap: _trialLoading ? null : _startTrial,
           ),
           const SizedBox(height: 14),
           GestureDetector(

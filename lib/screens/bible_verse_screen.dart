@@ -24,54 +24,252 @@ class BibleVerseScreen extends StatefulWidget {
   State<BibleVerseScreen> createState() => _BibleVerseScreenState();
 }
 
+// Represents a single row in the infinite scroll list — either a chapter divider or a verse.
+class _ListItem {
+  final bool isHeader;
+  final BibleChapterData chapter;
+  final BibleVerse? verse;
+
+  const _ListItem.header(this.chapter)
+      : isHeader = true,
+        verse = null;
+
+  const _ListItem.verse(this.chapter, BibleVerse v)
+      : isHeader = false,
+        verse = v;
+}
+
 class _BibleVerseScreenState extends State<BibleVerseScreen> {
-  BibleChapterData? _data;
-  String? _error;
-  bool _loading = true;
-  late int _currentChapter;
+  final _scrollController = ScrollController();
+  final List<BibleChapterData> _chapters = [];
+  final List<_ListItem> _items = [];
+
+  bool _initialLoading = true;
+  String? _initialError;
+  bool _loadingPrev = false;
+  bool _loadingNext = false;
+  bool _reachedStart = false;
+  bool _reachedEnd = false;
+  bool _hasScrolledPastTopThreshold = false;
+  String _headerLabel = '';
   late String _translation;
   Set<String> _highlightedRefs = {};
+
+  // SharedPreferences keys for scroll position memory
+  static const _kScrollBook = 'bible_scroll_book';
+  static const _kScrollChapter = 'bible_scroll_chapter';
+  static const _kScrollOffset = 'bible_scroll_offset';
+
+  // Approximate item heights used only for chapter-heading estimation while scrolling.
+  // Exact pixel accuracy is not needed — just close enough to know which chapter is visible.
+  static const double _kVerseEstHeight = 90.0;
+  static const double _kDividerEstHeight = 68.0;
 
   @override
   void initState() {
     super.initState();
-    _currentChapter = widget.chapter;
-    _translation = widget.prefs.getString('bible_translation') ?? BibleApiService.defaultTranslation;
-    _highlightedRefs = loadHighlights(widget.prefs).map((h) => h.verseRef).toSet();
-    _load();
+    _translation =
+        widget.prefs.getString('bible_translation') ?? BibleApiService.defaultTranslation;
+    _highlightedRefs =
+        loadHighlights(widget.prefs).map((h) => h.verseRef).toSet();
+    _headerLabel = '${widget.bookName} ${widget.chapter}';
+    _scrollController.addListener(_onScroll);
+    _loadInitialChapter();
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  @override
+  void dispose() {
+    _saveScrollPosition();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  // ── Scroll position memory ──────────────────────────────────────────────────
+
+  void _saveScrollPosition() {
+    if (_chapters.isEmpty || !_scrollController.hasClients) return;
+    widget.prefs.setString(_kScrollBook, widget.bookName);
+    widget.prefs.setInt(_kScrollChapter, widget.chapter);
+    widget.prefs.setDouble(_kScrollOffset, _scrollController.offset);
+  }
+
+  void _maybeRestoreScrollPosition() {
+    final savedBook = widget.prefs.getString(_kScrollBook);
+    final savedChapter = widget.prefs.getInt(_kScrollChapter);
+    final savedOffset = widget.prefs.getDouble(_kScrollOffset);
+    if (savedBook == widget.bookName &&
+        savedChapter == widget.chapter &&
+        savedOffset != null &&
+        savedOffset > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          final max = _scrollController.position.maxScrollExtent;
+          _scrollController.jumpTo(savedOffset.clamp(0.0, max));
+        }
+      });
+    }
+  }
+
+  // ── Chapter loading ─────────────────────────────────────────────────────────
+
+  Future<void> _loadInitialChapter() async {
     try {
       final data = await BibleApiService.fetchChapter(
         widget.bookName,
-        _currentChapter,
+        widget.chapter,
         translation: _translation,
       );
-      if (mounted) setState(() { _data = data; _loading = false; });
+      if (!mounted) return;
+      setState(() {
+        _chapters.add(data);
+        _rebuildItems();
+        _reachedStart = !data.hasPrev;
+        _reachedEnd = !data.hasNext;
+        _initialLoading = false;
+        _headerLabel = '${data.bookName} ${data.chapterNumber}';
+      });
+      _maybeRestoreScrollPosition();
     } catch (_) {
       if (mounted) {
         setState(() {
-          _error = 'Could not load chapter. Please check your connection and try again.';
-          _loading = false;
+          _initialError =
+              'Could not load chapter. Please check your connection and try again.';
+          _initialLoading = false;
         });
       }
     }
   }
 
-  int get _totalChapters => BibleApiService.chapterCounts[widget.bookName] ?? 1;
-
-  void _goToChapter(int chapter) {
-    setState(() => _currentChapter = chapter);
-    _load();
+  Future<void> _loadNext() async {
+    if (_loadingNext || _reachedEnd || _chapters.isEmpty) return;
+    setState(() => _loadingNext = true);
+    final nextNum = _chapters.last.chapterNumber + 1;
+    try {
+      final data = await BibleApiService.fetchChapter(
+        widget.bookName,
+        nextNum,
+        translation: _translation,
+      );
+      if (!mounted) return;
+      setState(() {
+        _chapters.add(data);
+        _items.add(_ListItem.header(data));
+        for (final v in data.verses) {
+          _items.add(_ListItem.verse(data, v));
+        }
+        _reachedEnd = !data.hasNext;
+        _loadingNext = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadingNext = false);
+    }
   }
 
-  void _toggleHighlight(BuildContext screenCtx, BibleVerse verse, WaypointThemeData t) {
-    final ref = '${widget.bookName} $_currentChapter:${verse.number}';
+  Future<void> _loadPrev() async {
+    if (_loadingPrev || _reachedStart || _chapters.isEmpty) return;
+    setState(() => _loadingPrev = true);
+    final prevNum = _chapters.first.chapterNumber - 1;
+    try {
+      final data = await BibleApiService.fetchChapter(
+        widget.bookName,
+        prevNum,
+        translation: _translation,
+      );
+      if (!mounted) return;
+
+      // Capture old maxScrollExtent before inserting content above current view.
+      final oldMax = _scrollController.hasClients
+          ? _scrollController.position.maxScrollExtent
+          : 0.0;
+
+      final newItems = [
+        _ListItem.header(data),
+        ...data.verses.map((v) => _ListItem.verse(data, v)),
+      ];
+
+      setState(() {
+        _chapters.insert(0, data);
+        _items.insertAll(0, newItems);
+        _reachedStart = !data.hasPrev;
+        _loadingPrev = false;
+      });
+
+      // After the frame repaints, scroll down by the exact height gained above
+      // the current position so the visible content stays locked in place.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scrollController.hasClients) return;
+        final newMax = _scrollController.position.maxScrollExtent;
+        final delta = newMax - oldMax;
+        if (delta > 0) {
+          _scrollController.jumpTo(
+            (_scrollController.offset + delta).clamp(0.0, newMax),
+          );
+        }
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadingPrev = false);
+    }
+  }
+
+  void _rebuildItems() {
+    _items.clear();
+    for (final ch in _chapters) {
+      _items.add(_ListItem.header(ch));
+      for (final v in ch.verses) {
+        _items.add(_ListItem.verse(ch, v));
+      }
+    }
+  }
+
+  // ── Scroll listener ─────────────────────────────────────────────────────────
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    final offset = pos.pixels;
+    final max = pos.maxScrollExtent;
+    if (max <= 0) return;
+
+    _updateHeaderLabel(offset);
+
+    if (offset > max * 0.30) {
+      _hasScrolledPastTopThreshold = true;
+    }
+
+    if (offset > max * 0.70 && !_loadingNext && !_reachedEnd) {
+      _loadNext();
+    }
+    if (_hasScrolledPastTopThreshold && offset < max * 0.30 && !_loadingPrev && !_reachedStart) {
+      _loadPrev();
+    }
+  }
+
+  // Estimates which chapter is at the top of the viewport using cumulative
+  // approximate heights. Close enough for a heading label; no pixel-perfect math needed.
+  void _updateHeaderLabel(double offset) {
+    if (_chapters.isEmpty) return;
+    double cumulative = 0;
+    BibleChapterData? current;
+    for (final ch in _chapters) {
+      final height = _kDividerEstHeight + ch.verses.length * _kVerseEstHeight;
+      if (offset < cumulative + height) {
+        current = ch;
+        break;
+      }
+      cumulative += height;
+    }
+    current ??= _chapters.last;
+    final label = '${current.bookName} ${current.chapterNumber}';
+    if (label != _headerLabel) {
+      setState(() => _headerLabel = label);
+    }
+  }
+
+  // ── Verse actions ───────────────────────────────────────────────────────────
+
+  void _toggleHighlight(
+      BuildContext screenCtx, BibleVerse verse, int chapterNum, WaypointThemeData t) {
+    final ref = '${widget.bookName} $chapterNum:${verse.number}';
     final highlights = loadHighlights(widget.prefs);
     final idx = highlights.indexWhere((h) => h.verseRef == ref);
 
@@ -111,8 +309,9 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
     }
   }
 
-  void _showVerseActions(BuildContext screenCtx, BibleVerse verse, WaypointThemeData t) {
-    final ref = '${widget.bookName} $_currentChapter:${verse.number}';
+  void _showVerseActions(
+      BuildContext screenCtx, BibleVerse verse, int chapterNum, WaypointThemeData t) {
+    final ref = '${widget.bookName} $chapterNum:${verse.number}';
     final isHighlighted = _highlightedRefs.contains(ref);
 
     showModalBottomSheet(
@@ -202,7 +401,7 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
               color: t.primary,
               onTap: () {
                 Navigator.pop(sheetCtx);
-                _toggleHighlight(screenCtx, verse, t);
+                _toggleHighlight(screenCtx, verse, chapterNum, t);
               },
             ),
             _ActionTile(
@@ -211,13 +410,12 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
               color: t.textSecondary,
               onTap: () {
                 Navigator.pop(sheetCtx);
-                Clipboard.setData(ClipboardData(text: '$ref ($_translation)\n${verse.text}'));
+                Clipboard.setData(
+                    ClipboardData(text: '$ref ($_translation)\n${verse.text}'));
                 ScaffoldMessenger.of(screenCtx).showSnackBar(
                   SnackBar(
-                    content: const Text(
-                      'Verse copied',
-                      style: TextStyle(fontFamily: 'Georgia'),
-                    ),
+                    content: const Text('Verse copied',
+                        style: TextStyle(fontFamily: 'Georgia')),
                     backgroundColor: t.primary,
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(
@@ -303,10 +501,8 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: const Text(
-                      'Added to journal',
-                      style: TextStyle(fontFamily: 'Georgia'),
-                    ),
+                    content: const Text('Added to journal',
+                        style: TextStyle(fontFamily: 'Georgia')),
                     backgroundColor: t.primary,
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(
@@ -349,6 +545,8 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
     }
   }
 
+  // ── Build ───────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final t = WaypointTheme.of(context);
@@ -360,8 +558,9 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
           icon: Icon(Icons.arrow_back_ios, color: t.textPrimary, size: 20),
           onPressed: () => Navigator.pop(context),
         ),
+        // Title tracks the chapter currently visible at the top of the scroll view.
         title: Text(
-          '${widget.bookName} $_currentChapter',
+          _headerLabel,
           style: TextStyle(
             fontFamily: 'Georgia',
             fontSize: 20,
@@ -392,12 +591,11 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
         ],
       ),
       body: _buildBody(context, t),
-      bottomNavigationBar: _buildChapterNav(context, t),
     );
   }
 
   Widget _buildBody(BuildContext context, WaypointThemeData t) {
-    if (_loading) {
+    if (_initialLoading) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -417,7 +615,7 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
       );
     }
 
-    if (_error != null) {
+    if (_initialError != null) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -427,7 +625,7 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
               Icon(Icons.wifi_off_outlined, size: 48, color: t.textHint),
               const SizedBox(height: 16),
               Text(
-                _error!,
+                _initialError!,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontFamily: 'Georgia',
@@ -437,7 +635,15 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
               ),
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: _load,
+                onPressed: () {
+                  setState(() {
+                    _initialLoading = true;
+                    _initialError = null;
+                    _chapters.clear();
+                    _items.clear();
+                  });
+                  _loadInitialChapter();
+                },
                 child: const Text('Try Again',
                     style: TextStyle(fontFamily: 'Georgia')),
               ),
@@ -447,97 +653,80 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
       );
     }
 
-    final verses = _data?.verses ?? [];
-    if (verses.isEmpty) {
+    if (_items.isEmpty) {
       return Center(
         child: Text(
-          'No verses found for this chapter.',
+          'No verses found.',
           style: TextStyle(fontFamily: 'Georgia', color: t.textSecondary),
         ),
       );
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
-      itemCount: verses.length,
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 48),
+      itemCount: _items.length,
       itemBuilder: (ctx, i) {
-        final verse = verses[i];
+        final item = _items[i];
+        if (item.isHeader) {
+          return _ChapterDivider(
+            bookName: item.chapter.bookName,
+            chapterNumber: item.chapter.chapterNumber,
+            t: t,
+            isFirst: i == 0,
+          );
+        }
+        final verse = item.verse!;
+        final chNum = item.chapter.chapterNumber;
+        final ref = '${widget.bookName} $chNum:${verse.number}';
         return _VerseItem(
           verse: verse,
           t: t,
-          onAction: () => _showVerseActions(context, verse, t),
-          isHighlighted: _highlightedRefs.contains(
-              '${widget.bookName} $_currentChapter:${verse.number}'),
+          onAction: () => _showVerseActions(context, verse, chNum, t),
+          isHighlighted: _highlightedRefs.contains(ref),
         );
       },
     );
   }
+}
 
-  Widget _buildChapterNav(BuildContext context, WaypointThemeData t) {
-    final hasPrev = _currentChapter > 1;
-    final hasNext = _currentChapter < _totalChapters;
+// ── Widgets ─────────────────────────────────────────────────────────────────
 
-    return SafeArea(
-      top: false,
-      child: Container(
-        height: 52,
-        decoration: BoxDecoration(
-          color: t.navBg,
-          border: Border(top: BorderSide(color: t.cardBorder)),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextButton(
-                onPressed: hasPrev ? () => _goToChapter(_currentChapter - 1) : null,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.arrow_back_ios,
-                      size: 13,
-                      color: hasPrev ? t.primary : t.textHint,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Previous',
-                      style: TextStyle(
-                        fontFamily: 'Georgia',
-                        fontSize: 14,
-                        color: hasPrev ? t.primary : t.textHint,
-                      ),
-                    ),
-                  ],
-                ),
+class _ChapterDivider extends StatelessWidget {
+  final String bookName;
+  final int chapterNumber;
+  final WaypointThemeData t;
+  final bool isFirst;
+
+  const _ChapterDivider({
+    required this.bookName,
+    required this.chapterNumber,
+    required this.t,
+    required this.isFirst,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(top: isFirst ? 12 : 44, bottom: 20),
+      child: Row(
+        children: [
+          Expanded(child: Divider(color: t.cardBorder, thickness: 1)),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              '$bookName $chapterNumber',
+              style: TextStyle(
+                fontFamily: 'Georgia',
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: t.primary,
+                letterSpacing: 0.5,
               ),
             ),
-            Container(width: 1, height: 28, color: t.cardBorder),
-            Expanded(
-              child: TextButton(
-                onPressed: hasNext ? () => _goToChapter(_currentChapter + 1) : null,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Next',
-                      style: TextStyle(
-                        fontFamily: 'Georgia',
-                        fontSize: 14,
-                        color: hasNext ? t.primary : t.textHint,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Icon(
-                      Icons.arrow_forward_ios,
-                      size: 13,
-                      color: hasNext ? t.primary : t.textHint,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+          Expanded(child: Divider(color: t.cardBorder, thickness: 1)),
+        ],
       ),
     );
   }

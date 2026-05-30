@@ -1048,6 +1048,8 @@ class _InputBar extends StatelessWidget {
                   maxLines: null,
                   keyboardType: TextInputType.multiline,
                   textCapitalization: TextCapitalization.sentences,
+                  autocorrect: false,
+                  enableSuggestions: false,
                   style: TextStyle(
                     fontFamily: 'Georgia',
                     fontSize: 15,
