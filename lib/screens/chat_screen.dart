@@ -9,7 +9,10 @@ import '../constants.dart';
 import '../data/daily_verses.dart';
 import '../services/message_limit_service.dart';
 import '../services/revenue_cat_service.dart';
+import '../services/haptic_service.dart';
+import '../services/review_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/waypoint_tooltip.dart';
 
 // ── Denomination-aware system prompt ──────────────────────────────────────────
 
@@ -171,6 +174,30 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _isLimited = false;
   bool _paywallShownThisSession = false;
 
+  // ── Follow-up chips ─────────────────────────────────────────────────────────
+  List<String> _followUpChips = [];
+
+  static const _kVerseChips = [
+    'What\'s the historical context?',
+    'How do I apply this today?',
+    'Any related verses on this?',
+  ];
+  static const _kGeneralChips = [
+    'Tell me more',
+    'How does this apply to my life?',
+    'What does Scripture say about this?',
+  ];
+  static final _kVersePattern = RegExp(r'\b\d?\s*[A-Z][a-z]+\s+\d+:\d+\b');
+
+  void _generateFollowUpChips(String response) {
+    final chips = _kVersePattern.hasMatch(response) ? _kVerseChips : _kGeneralChips;
+    if (mounted) setState(() => _followUpChips = List.from(chips));
+  }
+
+  void _clearChips() {
+    if (_followUpChips.isNotEmpty) setState(() => _followUpChips = []);
+  }
+
   final List<String> _charQueue = [];
   Timer? _charTimer;
   ChatMessage? _streamingMessage;
@@ -215,10 +242,42 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  static const _kSessionKey = 'chat_session_history';
+  static const _kSessionMaxPairs = 10;
+
+  void _saveChatSession() {
+    final history = _conversationHistory;
+    final toSave = history.length > _kSessionMaxPairs * 2
+        ? history.sublist(history.length - _kSessionMaxPairs * 2)
+        : history;
+    widget.prefs.setString(_kSessionKey, jsonEncode(toSave));
+  }
+
+  void _loadChatSession() {
+    final raw = widget.prefs.getString(_kSessionKey);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      for (final e in list) {
+        final entry = Map<String, String>.from(e as Map);
+        _conversationHistory.add(entry);
+        _messages.add(ChatMessage(
+          text: entry['content'] ?? '',
+          isUser: entry['role'] == 'user',
+          timestamp: DateTime.now(),
+        ));
+      }
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadChatSession();
+    _inputController.addListener(() {
+      if (_inputController.text.isNotEmpty) _clearChips();
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkPendingPrompt());
     _refreshProAndLimits();
   }
@@ -290,6 +349,8 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<void> _sendMessageWithText(String text) async {
     if (text.isEmpty || _isLoading) return;
+    HapticService.light();
+    _clearChips();
 
     // Lock the UI immediately to prevent double-sends during async checks.
     setState(() => _isLoading = true);
@@ -353,6 +414,8 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       _apiStreamComplete = true;
       _conversationHistory.add({'role': 'assistant', 'content': fullResponse});
+      _saveChatSession();
+      _generateFollowUpChips(fullResponse);
 
       // After the full response is displayed, check whether the limit is now
       // reached and show the paywall sheet once per session.
@@ -371,6 +434,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       final chatCount = (widget.prefs.getInt('chat_count') ?? 0) + 1;
       widget.prefs.setInt('chat_count', chatCount);
+      ReviewService.maybeRequestAfterChat(widget.prefs);
       if (mounted) setState(() => _isLoading = false);
       _scrollToBottom();
     } catch (e) {
@@ -643,6 +707,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     children: [
                       ListView.builder(
                         controller: _scrollController,
+                        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                         padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                         itemCount: _messages.length,
                         itemBuilder: (context, index) {
@@ -658,9 +723,25 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                             _inputController.text = 'Tell me about $ref';
                           },
                         ),
+                      WaypointTooltipBubble(
+                        prefKey: 'tooltip_seen_chat',
+                        message: 'Ask me anything — a verse, a feeling, or a question about faith',
+                        prefs: widget.prefs,
+                        alignment: Alignment.bottomCenter,
+                      ),
                     ],
                   ),
                 ),
+                if (_followUpChips.isNotEmpty && !_isLoading)
+                  _FollowUpChipsRow(
+                    chips: _followUpChips,
+                    t: t,
+                    onTap: (chip) {
+                      HapticService.selection();
+                      _clearChips();
+                      _sendMessageWithText(chip);
+                    },
+                  ),
                 _InputBar(
                   controller: _inputController,
                   isLoading: _isLoading,
@@ -991,6 +1072,54 @@ class _VerseOfDayEmpty extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Follow-up chips ───────────────────────────────────────────────────────────
+
+class _FollowUpChipsRow extends StatelessWidget {
+  final List<String> chips;
+  final WaypointThemeData t;
+  final void Function(String chip) onTap;
+
+  const _FollowUpChipsRow({
+    required this.chips,
+    required this.t,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: chips.map((chip) => Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: GestureDetector(
+              onTap: () => onTap(chip),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: t.cardBg.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: t.primary.withValues(alpha: 0.35)),
+                ),
+                child: Text(
+                  chip,
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontSize: 13,
+                    color: t.primary,
+                  ),
+                ),
+              ),
+            ),
+          )).toList(),
         ),
       ),
     );

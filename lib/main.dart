@@ -13,6 +13,7 @@ import 'services/revenue_cat_service.dart';
 import 'services/notification_service.dart';
 import 'services/theme_service.dart';
 import 'services/widget_update_service.dart';
+import 'services/haptic_service.dart';
 import 'theme/app_theme.dart';
 
 void main() async {
@@ -21,6 +22,7 @@ void main() async {
   // as early as possible even if later services are slow to initialise.
   await MessageLimitService.recordFirstOpenIfNeeded();
   final prefs = await SharedPreferences.getInstance();
+  HapticService.init(prefs);
   runApp(WaypointApp(prefs: prefs));
   _initServices(prefs);
 }

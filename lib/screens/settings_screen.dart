@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/haptic_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/notification_service.dart';
 import '../services/revenue_cat_service.dart';
@@ -30,10 +31,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _selectedTranslation = 'BSB';
   String _notificationSubtitle = 'Every morning at 8:00 AM';
   bool _isPro = false;
+  bool _hapticEnabled = true;
 
   @override
   void initState() {
     super.initState();
+    _hapticEnabled = widget.prefs.getBool('haptic_enabled') ?? true;
     _selectedDenomination = widget.prefs.getString(kDenominationKey);
     _selectedTranslation = widget.prefs.getString(kTranslationKey) ?? 'BSB';
     final savedTime = widget.prefs.getString('notification_time');
@@ -433,6 +436,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: 'Share a thought or report an issue',
             t: t,
             onTap: _showFeedbackSheet,
+          ),
+          const SizedBox(height: 12),
+          _SettingsToggle(
+            icon: Icons.vibration_outlined,
+            title: 'Haptic Feedback',
+            subtitle: 'Subtle vibrations on key interactions',
+            value: _hapticEnabled,
+            t: t,
+            onChanged: (val) {
+              widget.prefs.setBool('haptic_enabled', val);
+              HapticService.init(widget.prefs);
+              setState(() => _hapticEnabled = val);
+            },
           ),
           const SizedBox(height: 32),
           Center(
@@ -951,6 +967,75 @@ class _SettingsTile extends StatelessWidget {
             Icon(Icons.chevron_right, color: t.textHint),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ── Settings toggle ───────────────────────────────────────────────────────────
+
+class _SettingsToggle extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final WaypointThemeData t;
+  final bool value;
+  final void Function(bool) onChanged;
+
+  const _SettingsToggle({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.t,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      decoration: BoxDecoration(
+        color: t.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: t.cardBorder),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: t.primary, size: 22),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: t.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontSize: 13,
+                    color: t.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeThumbColor: t.primary,
+            activeTrackColor: t.primary.withValues(alpha: 0.4),
+          ),
+        ],
       ),
     );
   }

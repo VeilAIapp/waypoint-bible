@@ -7,6 +7,7 @@ class VerseHighlight {
   final String verseText;
   final DateTime createdAt;
   String? note;
+  String color;
 
   VerseHighlight({
     required this.id,
@@ -14,6 +15,7 @@ class VerseHighlight {
     required this.verseText,
     required this.createdAt,
     this.note,
+    this.color = 'gold',
   });
 
   Map<String, dynamic> toJson() => {
@@ -22,6 +24,7 @@ class VerseHighlight {
         'verseText': verseText,
         'createdAt': createdAt.toIso8601String(),
         if (note != null) 'note': note,
+        'color': color,
       };
 
   factory VerseHighlight.fromJson(Map<String, dynamic> json) => VerseHighlight(
@@ -30,6 +33,7 @@ class VerseHighlight {
         verseText: json['verseText'] as String,
         createdAt: DateTime.parse(json['createdAt'] as String),
         note: json['note'] as String?,
+        color: (json['color'] as String?) ?? 'gold',
       );
 }
 

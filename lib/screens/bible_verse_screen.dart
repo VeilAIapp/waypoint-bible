@@ -1,10 +1,13 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/haptic_service.dart';
 import '../theme/app_theme.dart';
 import '../services/bible_api_service.dart';
 import '../models/verse_highlight.dart';
+import '../widgets/waypoint_tooltip.dart';
 
 class BibleVerseScreen extends StatefulWidget {
   final String bookName;
@@ -53,7 +56,18 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
   bool _hasScrolledPastTopThreshold = false;
   String _headerLabel = '';
   late String _translation;
-  Set<String> _highlightedRefs = {};
+  late double _fontSize;
+  Map<String, String> _highlightColors = {}; // verseRef → color name
+
+  static const _kFontSizes = [15.0, 17.0, 20.0];
+  static const _kFontSizeKey = 'bible_font_size';
+
+  static const _kHighlightColors = {
+    'gold': Color(0xFFF5C842),
+    'blue': Color(0xFF5B8DEF),
+    'green': Color(0xFF4CAF7D),
+    'pink': Color(0xFFE4688A),
+  };
 
   // SharedPreferences keys for scroll position memory
   static const _kScrollBook = 'bible_scroll_book';
@@ -70,8 +84,10 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
     super.initState();
     _translation =
         widget.prefs.getString('bible_translation') ?? BibleApiService.defaultTranslation;
-    _highlightedRefs =
-        loadHighlights(widget.prefs).map((h) => h.verseRef).toSet();
+    _fontSize = widget.prefs.getDouble(_kFontSizeKey) ?? 17.0;
+    _highlightColors = {
+      for (final h in loadHighlights(widget.prefs)) h.verseRef: h.color,
+    };
     _headerLabel = '${widget.bookName} ${widget.chapter}';
     _scrollController.addListener(_onScroll);
     _loadInitialChapter();
@@ -265,54 +281,223 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
     }
   }
 
+  // ── Translation picker ──────────────────────────────────────────────────────
+
+  static const _kTranslations = [
+    ('BSB', 'Berean Standard Bible'),
+    ('KJV', 'King James Version'),
+    ('WEB', 'World English Bible'),
+  ];
+
+  void _showTranslationPicker(BuildContext context, WaypointThemeData t) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: t.cardBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: t.cardBorder,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+              child: Text(
+                'Choose Translation',
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: t.textPrimary,
+                ),
+              ),
+            ),
+            ..._kTranslations.map((entry) {
+              final (code, name) = entry;
+              final isSelected = _translation == code;
+              return ListTile(
+                title: Text(
+                  code,
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontWeight: FontWeight.bold,
+                    color: isSelected ? t.primary : t.textPrimary,
+                  ),
+                ),
+                subtitle: Text(
+                  name,
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    color: t.textSecondary,
+                    fontSize: 13,
+                  ),
+                ),
+                trailing: isSelected ? Icon(Icons.check_rounded, color: t.primary) : null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  if (code == _translation) return;
+                  setState(() {
+                    _translation = code;
+                    _chapters.clear();
+                    _items.clear();
+                    _initialLoading = true;
+                    _reachedStart = false;
+                    _reachedEnd = false;
+                    _hasScrolledPastTopThreshold = false;
+                  });
+                  widget.prefs.setString('bible_translation', code);
+                  _loadInitialChapter();
+                },
+              );
+            }),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── Verse actions ───────────────────────────────────────────────────────────
 
-  void _toggleHighlight(
+  void _removeHighlight(
       BuildContext screenCtx, BibleVerse verse, int chapterNum, WaypointThemeData t) {
+    HapticService.light();
     final ref = '${widget.bookName} $chapterNum:${verse.number}';
     final highlights = loadHighlights(widget.prefs);
-    final idx = highlights.indexWhere((h) => h.verseRef == ref);
+    highlights.removeWhere((h) => h.verseRef == ref);
+    saveHighlights(widget.prefs, highlights);
+    setState(() => _highlightColors.remove(ref));
+    ScaffoldMessenger.of(screenCtx).showSnackBar(SnackBar(
+      content: const Text('Highlight removed', style: TextStyle(fontFamily: 'Georgia')),
+      backgroundColor: t.primary,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ));
+  }
 
-    if (idx != -1) {
-      highlights.removeAt(idx);
-      saveHighlights(widget.prefs, highlights);
-      setState(() => _highlightedRefs.remove(ref));
-      ScaffoldMessenger.of(screenCtx).showSnackBar(SnackBar(
-        content: const Text('Highlight removed', style: TextStyle(fontFamily: 'Georgia')),
-        backgroundColor: t.primary,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ));
-    } else {
-      final highlight = VerseHighlight(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        verseRef: ref,
-        verseText: verse.text,
-        createdAt: DateTime.now(),
-      );
-      highlights.insert(0, highlight);
-      saveHighlights(widget.prefs, highlights);
-      setState(() => _highlightedRefs.add(ref));
+  void _addHighlight(
+      BuildContext screenCtx, BibleVerse verse, int chapterNum, WaypointThemeData t, String color) {
+    HapticService.medium();
+    final ref = '${widget.bookName} $chapterNum:${verse.number}';
+    final highlights = loadHighlights(widget.prefs);
+    highlights.removeWhere((h) => h.verseRef == ref);
+    highlights.insert(0, VerseHighlight(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      verseRef: ref,
+      verseText: verse.text,
+      createdAt: DateTime.now(),
+      color: color,
+    ));
+    saveHighlights(widget.prefs, highlights);
+    setState(() => _highlightColors[ref] = color);
 
-      final badges = widget.prefs.getStringList('earned_badges') ?? [];
-      if (!badges.contains('highlight_1')) {
-        badges.add('highlight_1');
-        widget.prefs.setStringList('earned_badges', badges);
-      }
-
-      ScaffoldMessenger.of(screenCtx).showSnackBar(SnackBar(
-        content: const Text('Verse highlighted', style: TextStyle(fontFamily: 'Georgia')),
-        backgroundColor: t.primary,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ));
+    final badges = widget.prefs.getStringList('earned_badges') ?? [];
+    if (!badges.contains('highlight_1')) {
+      badges.add('highlight_1');
+      widget.prefs.setStringList('earned_badges', badges);
     }
+
+    ScaffoldMessenger.of(screenCtx).showSnackBar(SnackBar(
+      content: const Text('Verse highlighted', style: TextStyle(fontFamily: 'Georgia')),
+      backgroundColor: t.primary,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ));
+  }
+
+  void _showColorPicker(
+      BuildContext screenCtx, BibleVerse verse, int chapterNum, WaypointThemeData t) {
+    showModalBottomSheet(
+      context: screenCtx,
+      backgroundColor: t.cardBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 8, bottom: 16),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: t.cardBorder, borderRadius: BorderRadius.circular(2)),
+              ),
+              Text(
+                'Choose a highlight color',
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: t.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: _kHighlightColors.entries.map((entry) {
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _addHighlight(screenCtx, verse, chapterNum, t, entry.key);
+                    },
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: entry.value,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: entry.value.withValues(alpha: 0.4),
+                                blurRadius: 8,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${entry.key[0].toUpperCase()}${entry.key.substring(1)}',
+                          style: TextStyle(
+                            fontFamily: 'Georgia',
+                            fontSize: 12,
+                            color: t.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _showVerseActions(
       BuildContext screenCtx, BibleVerse verse, int chapterNum, WaypointThemeData t) {
     final ref = '${widget.bookName} $chapterNum:${verse.number}';
-    final isHighlighted = _highlightedRefs.contains(ref);
+    final isHighlighted = _highlightColors.containsKey(ref);
 
     showModalBottomSheet(
       context: screenCtx,
@@ -381,9 +566,12 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
                     'I\'d like to discuss $ref ($_translation): "${verse.text}" — '
                     'Can you explain what this verse means, its historical context, '
                     'and how I can apply it to my life today?';
+                final callback = widget.onPromptSelected;
                 Navigator.pop(sheetCtx);
-                Navigator.of(screenCtx).popUntil((route) => route.isFirst);
-                widget.onPromptSelected?.call(prompt);
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.of(screenCtx).popUntil((route) => route.isFirst);
+                  callback?.call(prompt);
+                });
               },
             ),
             _ActionTile(
@@ -401,7 +589,11 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
               color: t.primary,
               onTap: () {
                 Navigator.pop(sheetCtx);
-                _toggleHighlight(screenCtx, verse, chapterNum, t);
+                if (isHighlighted) {
+                  _removeHighlight(screenCtx, verse, chapterNum, t);
+                } else {
+                  _showColorPicker(screenCtx, verse, chapterNum, t);
+                }
               },
             ),
             _ActionTile(
@@ -421,6 +613,18 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
                   ),
+                );
+              },
+            ),
+            _ActionTile(
+              icon: Icons.share_outlined,
+              label: 'Share Verse',
+              color: t.textSecondary,
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                Share.share(
+                  '"${verse.text}"\n— $ref ($_translation)',
+                  subject: ref,
                 );
               },
             ),
@@ -570,27 +774,70 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
         ),
         centerTitle: true,
         actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 16),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-            decoration: BoxDecoration(
-              color: t.cardBg,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: t.cardBorder),
+          GestureDetector(
+            onTap: () {
+              final next = _kFontSizes[(_kFontSizes.indexOf(_fontSize) + 1) % _kFontSizes.length];
+              setState(() => _fontSize = next);
+              widget.prefs.setDouble(_kFontSizeKey, next);
+            },
+            child: Container(
+              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: t.cardBg,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: t.cardBorder),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('A', style: TextStyle(fontFamily: 'Georgia', fontSize: 11, color: t.textSecondary, fontWeight: FontWeight.bold)),
+                  Text('A', style: TextStyle(fontFamily: 'Georgia', fontSize: 15, color: t.primary, fontWeight: FontWeight.bold)),
+                ],
+              ),
             ),
-            child: Text(
-              _translation,
-              style: TextStyle(
-                fontFamily: 'Georgia',
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-                color: t.primary,
+          ),
+          GestureDetector(
+            onTap: () => _showTranslationPicker(context, t),
+            child: Container(
+              margin: const EdgeInsets.only(right: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+              decoration: BoxDecoration(
+                color: t.cardBg,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: t.primary.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _translation,
+                    style: TextStyle(
+                      fontFamily: 'Georgia',
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: t.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(Icons.expand_more_rounded, size: 16, color: t.primary),
+                ],
               ),
             ),
           ),
         ],
       ),
-      body: _buildBody(context, t),
+      body: Stack(
+        children: [
+          _buildBody(context, t),
+          WaypointTooltipBubble(
+            prefKey: 'tooltip_seen_bible',
+            message: 'Tap to highlight · Hold for more options',
+            prefs: widget.prefs,
+            alignment: const Alignment(0, -0.2),
+          ),
+        ],
+      ),
     );
   }
 
@@ -682,8 +929,16 @@ class _BibleVerseScreenState extends State<BibleVerseScreen> {
         return _VerseItem(
           verse: verse,
           t: t,
-          onAction: () => _showVerseActions(context, verse, chNum, t),
-          isHighlighted: _highlightedRefs.contains(ref),
+          fontSize: _fontSize,
+          onTap: () {
+            if (_highlightColors.containsKey(ref)) {
+              _removeHighlight(context, verse, chNum, t);
+            } else {
+              _showColorPicker(context, verse, chNum, t);
+            }
+          },
+          onLongPress: () => _showVerseActions(context, verse, chNum, t),
+          highlightColor: _highlightColors[ref],
         );
       },
     );
@@ -735,30 +990,44 @@ class _ChapterDivider extends StatelessWidget {
 class _VerseItem extends StatelessWidget {
   final BibleVerse verse;
   final WaypointThemeData t;
-  final VoidCallback onAction;
-  final bool isHighlighted;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  final String? highlightColor;
+  final double fontSize;
 
   const _VerseItem({
     required this.verse,
     required this.t,
-    required this.onAction,
-    required this.isHighlighted,
+    required this.onTap,
+    required this.onLongPress,
+    required this.fontSize,
+    this.highlightColor,
   });
+
+  static const _kColors = {
+    'gold': Color(0xFFF5C842),
+    'blue': Color(0xFF5B8DEF),
+    'green': Color(0xFF4CAF7D),
+    'pink': Color(0xFFE4688A),
+  };
 
   @override
   Widget build(BuildContext context) {
+    final dotColor = highlightColor != null
+        ? (_kColors[highlightColor] ?? const Color(0xFFF5C842))
+        : null;
     return GestureDetector(
-      onTap: onAction,
-      onLongPress: onAction,
+      onTap: onTap,
+      onLongPress: onLongPress,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 5),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (isHighlighted)
+            if (dotColor != null)
               Padding(
                 padding: const EdgeInsets.only(top: 3, right: 4),
-                child: Icon(Icons.bookmark, size: 12, color: t.primary),
+                child: Icon(Icons.bookmark, size: 12, color: dotColor),
               ),
             Expanded(
               child: RichText(
@@ -778,7 +1047,7 @@ class _VerseItem extends StatelessWidget {
                       text: verse.text,
                       style: TextStyle(
                         fontFamily: 'Georgia',
-                        fontSize: 17,
+                        fontSize: fontSize,
                         color: t.textPrimary,
                         height: 1.75,
                       ),

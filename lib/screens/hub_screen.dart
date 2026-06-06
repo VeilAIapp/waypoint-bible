@@ -7,9 +7,11 @@ import 'reading_plans_screen.dart';
 import 'bible_studies_screen.dart';
 import 'journey_screen.dart';
 import 'highlights_screen.dart';
+import 'journal_screen.dart';
 import 'settings_screen.dart';
 import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/waypoint_tooltip.dart';
 
 class HubScreen extends StatefulWidget {
   final SharedPreferences prefs;
@@ -133,6 +135,7 @@ class _HubScreenState extends State<HubScreen> {
     final streak = widget.prefs.getInt('streak') ?? 0;
     final chatCount = widget.prefs.getInt('chat_count') ?? 0;
     final earnedBadges = widget.prefs.getStringList('earned_badges') ?? [];
+    final journalCount = (widget.prefs.getStringList('journal_entries') ?? []).length;
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -160,14 +163,24 @@ class _HubScreenState extends State<HubScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── Stats row ────────────────────────────────
-                  Row(
+                  // ── Stats grid ───────────────────────────────
+                  Column(
                     children: [
-                      _StatCard(label: 'Day Streak', value: '$streak', icon: Icons.explore, t: t),
-                      const SizedBox(width: 12),
-                      _StatCard(label: 'Conversations', value: '$chatCount', icon: Icons.chat_bubble_outline, t: t),
-                      const SizedBox(width: 12),
-                      _StatCard(label: 'Badges', value: '${earnedBadges.length}', icon: Icons.star_outline, t: t),
+                      Row(
+                        children: [
+                          _StatCard(label: 'Day Streak', value: '$streak', icon: Icons.explore, t: t),
+                          const SizedBox(width: 12),
+                          _StatCard(label: 'Conversations', value: '$chatCount', icon: Icons.chat_bubble_outline, t: t),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          _StatCard(label: 'Badges', value: '${earnedBadges.length}', icon: Icons.star_outline, t: t),
+                          const SizedBox(width: 12),
+                          _StatCard(label: 'Journal', value: '$journalCount', icon: Icons.book_outlined, t: t, onTap: () => _push(context, JournalScreen(prefs: widget.prefs))),
+                        ],
+                      ),
                     ],
                   ),
 
@@ -291,6 +304,12 @@ class _HubScreenState extends State<HubScreen> {
               ),
             ),
           ),
+          WaypointTooltipBubble(
+            prefKey: 'tooltip_seen_hub',
+            message: 'Your highlighted verses live here',
+            prefs: widget.prefs,
+            alignment: const Alignment(0, 0.18),
+          ),
         ],
       ),
     );
@@ -304,18 +323,22 @@ class _StatCard extends StatelessWidget {
   final String value;
   final IconData icon;
   final WaypointThemeData t;
+  final VoidCallback? onTap;
 
   const _StatCard({
     required this.label,
     required this.value,
     required this.icon,
     required this.t,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return Expanded(
-      child: Container(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
         padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
         decoration: BoxDecoration(
           color: t.cardBg.withValues(alpha: 0.85),
@@ -354,6 +377,7 @@ class _StatCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
       ),
     );
   }

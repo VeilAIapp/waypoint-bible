@@ -1,9 +1,15 @@
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../data/daily_verses.dart';
+import '../data/reading_plans.dart';
+import '../data/bible_studies.dart';
 import '../services/widget_update_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/waypoint_tooltip.dart';
+import 'reading_plans_screen.dart';
+import 'bible_studies_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final SharedPreferences prefs;
@@ -29,6 +35,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _streak = 0;
+  bool _welcomeBack = false;
   late Map<String, String> _todayVerse;
 
   static const List<Map<String, String>> _promptPool = [
@@ -62,6 +69,78 @@ class _HomeScreenState extends State<HomeScreen> {
     _todayVerse = getDailyVerse();
     _selectPrompts();
     _updateStreak();
+  }
+
+  String _greeting() {
+    if (_welcomeBack) return 'Good to see you again.';
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning.';
+    if (hour < 17) return 'Good afternoon.';
+    return 'Good evening.';
+  }
+
+  void _navigateToPlan(BuildContext context, ReadingPlan plan, int currentDay) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ReadingPlanDetailScreen(
+          plan: plan,
+          currentDay: currentDay,
+          prefs: widget.prefs,
+          onPromptSelected: widget.onPromptSelected,
+          onProgressUpdate: (day) {
+            try {
+              final raw = widget.prefs.getString('reading_plan_progress') ?? '{}';
+              final map = (jsonDecode(raw) as Map<String, dynamic>)
+                  .map((k, v) => MapEntry(k, v as int));
+              map[plan.id] = day;
+              widget.prefs.setString('reading_plan_progress', jsonEncode(map));
+            } catch (_) {}
+            if (day >= plan.totalDays) {
+              final badges = widget.prefs.getStringList('earned_badges') ?? [];
+              if (!badges.contains('plan_${plan.id}')) {
+                badges.add('plan_${plan.id}');
+                widget.prefs.setStringList('earned_badges', badges);
+              }
+            }
+          },
+        ),
+      ),
+    ).then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _navigateToStudy(BuildContext context, BibleStudy study, int currentDay) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StudyDetailScreen(
+          study: study,
+          currentDay: currentDay,
+          prefs: widget.prefs,
+          onPromptSelected: widget.onPromptSelected,
+          onProgressUpdate: (day) {
+            try {
+              final raw = widget.prefs.getString('study_progress') ?? '{}';
+              final map = (jsonDecode(raw) as Map<String, dynamic>)
+                  .map((k, v) => MapEntry(k, v as int));
+              map[study.id] = day;
+              widget.prefs.setString('study_progress', jsonEncode(map));
+            } catch (_) {}
+            if (day >= study.totalDays) {
+              final badges = widget.prefs.getStringList('earned_badges') ?? [];
+              if (!badges.contains('study_${study.id}')) {
+                badges.add('study_${study.id}');
+                widget.prefs.setStringList('earned_badges', badges);
+              }
+            }
+          },
+        ),
+      ),
+    ).then((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _selectPrompts() {
@@ -103,6 +182,7 @@ class _HomeScreenState extends State<HomeScreen> {
         } else if (difference == 1) {
           streak += 1;
         } else {
+          if (difference >= 3) _welcomeBack = true;
           streak = 1;
         }
       } catch (_) {
@@ -163,7 +243,7 @@ class _HomeScreenState extends State<HomeScreen> {
         elevation: 0,
         centerTitle: true,
         title: Text(
-          'Waypoint',
+          _greeting(),
           style: TextStyle(
             fontFamily: 'Georgia',
             fontSize: 22,
@@ -185,83 +265,107 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
 
                   // ── Verse of the Day ────────────────────────
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.fromLTRB(16, 18, 18, 18),
-                    decoration: BoxDecoration(
-                      color: t.cardBg.withValues(alpha: 0.92),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: t.cardBorder),
-                      boxShadow: [
-                        BoxShadow(
-                          color: t.primary.withValues(alpha: 0.08),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Container(
-                            width: 4,
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [t.primary, t.secondary],
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                              ),
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Icon(Icons.wb_sunny_outlined,
-                                        color: t.primary, size: 13),
-                                    const SizedBox(width: 5),
-                                    Text(
-                                      'VERSE OF THE DAY',
-                                      style: TextStyle(
-                                        fontFamily: 'Georgia',
-                                        color: t.primary,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 1.1,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  '"${_todayVerse['text']}"',
-                                  style: TextStyle(
-                                    fontFamily: 'Georgia',
-                                    color: t.textPrimary,
-                                    fontSize: 16,
-                                    height: 1.65,
-                                    fontStyle: FontStyle.italic,
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  _todayVerse['ref']!,
-                                  style: TextStyle(
-                                    fontFamily: 'Georgia',
-                                    color: t.primary,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
+                  GestureDetector(
+                    onTap: () {
+                      final ref = _todayVerse['ref']!;
+                      final text = _todayVerse['text']!;
+                      widget.onPromptSelected(
+                        'Today\'s verse is $ref: "$text" — '
+                        'Can you help me reflect on what this means and how I can carry it with me today?',
+                      );
+                    },
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(16, 18, 18, 14),
+                      decoration: BoxDecoration(
+                        color: t.cardBg.withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: t.cardBorder),
+                        boxShadow: [
+                          BoxShadow(
+                            color: t.primary.withValues(alpha: 0.08),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
                           ),
                         ],
+                      ),
+                      child: IntrinsicHeight(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Container(
+                              width: 4,
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [t.primary, t.secondary],
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                ),
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.wb_sunny_outlined,
+                                          color: t.primary, size: 13),
+                                      const SizedBox(width: 5),
+                                      Text(
+                                        'VERSE OF THE DAY',
+                                        style: TextStyle(
+                                          fontFamily: 'Georgia',
+                                          color: t.primary,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 1.1,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    '"${_todayVerse['text']}"',
+                                    style: TextStyle(
+                                      fontFamily: 'Georgia',
+                                      color: t.textPrimary,
+                                      fontSize: 16,
+                                      height: 1.65,
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        _todayVerse['ref']!,
+                                        style: TextStyle(
+                                          fontFamily: 'Georgia',
+                                          color: t.primary,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Discuss →',
+                                        style: TextStyle(
+                                          fontFamily: 'Georgia',
+                                          color: t.primary,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -364,48 +468,239 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 24),
+                  Builder(builder: (ctx) {
+                    ReadingPlan? activePlan;
+                    int activePlanDay = 0;
+                    BibleStudy? activeStudy;
+                    int activeStudyDay = 0;
+                    try {
+                      final raw = widget.prefs.getString('reading_plan_progress') ?? '{}';
+                      final map = (jsonDecode(raw) as Map<String, dynamic>)
+                          .map((k, v) => MapEntry(k, v as int));
+                      for (final p in kReadingPlans) {
+                        final d = map[p.id] ?? 0;
+                        if (d > 0 && d < p.totalDays) {
+                          activePlan = p;
+                          activePlanDay = d;
+                          break;
+                        }
+                      }
+                    } catch (_) {}
+                    try {
+                      final raw = widget.prefs.getString('study_progress') ?? '{}';
+                      final map = (jsonDecode(raw) as Map<String, dynamic>)
+                          .map((k, v) => MapEntry(k, v as int));
+                      for (final s in kBibleStudies) {
+                        final d = map[s.id] ?? 0;
+                        if (d > 0 && d < s.totalDays) {
+                          activeStudy = s;
+                          activeStudyDay = d;
+                          break;
+                        }
+                      }
+                    } catch (_) {}
 
-                  // ── Where to start ───────────────────────────
-                  Text(
-                    'Where would you like to start?',
-                    style: TextStyle(
-                      fontFamily: 'Georgia',
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: t.textPrimary,
-                    ),
-                  ),
+                    if (activePlan == null && activeStudy == null) {
+                      return const SizedBox(height: 24);
+                    }
+                    return Column(
+                      children: [
+                        const SizedBox(height: 14),
+                        GestureDetector(
+                          onTap: () => activePlan != null
+                              ? _navigateToPlan(ctx, activePlan, activePlanDay)
+                              : _navigateToStudy(ctx, activeStudy!, activeStudyDay),
+                          child: _HomeProgressCard(
+                            plan: activePlan,
+                            study: activeStudy,
+                            planDay: activePlanDay,
+                            studyDay: activeStudyDay,
+                            t: t,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                      ],
+                    );
+                  }),
 
-                  const SizedBox(height: 14),
-
-                  _EntryCard(
-                    icon: Icons.chat_bubble_outline,
-                    title: 'Companion',
-                    subtitle: 'Ask anything — verses, feelings, questions',
-                    t: t,
-                    onTap: widget.onNavigateToChat,
+                  // ── Quick access grid ────────────────────────
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _QuickTile(
+                          icon: Icons.chat_bubble_outline,
+                          title: 'Companion',
+                          subtitle: 'Ask anything about faith or Scripture',
+                          t: t,
+                          onTap: widget.onNavigateToChat,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _QuickTile(
+                          icon: Icons.menu_book_outlined,
+                          title: () {
+                            final book = widget.prefs.getString('bible_scroll_book');
+                            return book != null ? 'Keep Reading' : 'Bible';
+                          }(),
+                          subtitle: () {
+                            final book = widget.prefs.getString('bible_scroll_book');
+                            final ch = widget.prefs.getInt('bible_scroll_chapter');
+                            if (book != null && ch != null) return '$book $ch';
+                            return 'Read and explore Scripture';
+                          }(),
+                          t: t,
+                          onTap: widget.onNavigateToBible,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 10),
-                  _EntryCard(
-                    icon: Icons.search,
-                    title: 'Search Scripture',
-                    subtitle: 'Find verses by topic, feeling, or keyword',
-                    t: t,
-                    onTap: widget.onNavigateToSearch,
-                  ),
-                  const SizedBox(height: 10),
-                  _EntryCard(
-                    icon: Icons.emoji_events_outlined,
-                    title: 'My Journey',
-                    subtitle: 'Badges, journal entries and highlights',
-                    t: t,
-                    onTap: widget.onNavigateToHub,
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _QuickTile(
+                          icon: Icons.search,
+                          title: 'Search',
+                          subtitle: 'Find verses by topic, feeling, or keyword',
+                          t: t,
+                          onTap: widget.onNavigateToSearch,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _QuickTile(
+                          icon: Icons.emoji_events_outlined,
+                          title: 'My Journey',
+                          subtitle: 'Badges, highlights and journal',
+                          t: t,
+                          onTap: widget.onNavigateToHub,
+                        ),
+                      ),
+                    ],
                   ),
 
                   const SizedBox(height: 24),
                 ],
               ),
+            ),
+          ),
+          WaypointTooltipBubble(
+            prefKey: 'tooltip_seen_home',
+            message: 'Tap any of these to start a conversation',
+            prefs: widget.prefs,
+            alignment: const Alignment(0, -0.16),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Active progress card ──────────────────────────────────────────────────────
+
+class _HomeProgressCard extends StatelessWidget {
+  final ReadingPlan? plan;
+  final BibleStudy? study;
+  final int planDay;
+  final int studyDay;
+  final WaypointThemeData t;
+
+  const _HomeProgressCard({
+    required this.plan,
+    required this.study,
+    required this.planDay,
+    required this.studyDay,
+    required this.t,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isPlan = plan != null;
+    final String title = isPlan ? plan!.title : study!.title;
+    final int currentDay = isPlan ? planDay : studyDay;
+    final int totalDays = isPlan ? plan!.totalDays : study!.totalDays;
+    final IconData icon = isPlan ? plan!.iconData : study!.iconData;
+    final double percent = totalDays > 0 ? currentDay / totalDays : 0;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: t.accentLight,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: t.primary.withValues(alpha: 0.5), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: t.primary.withValues(alpha: 0.08),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [t.primary, t.secondary],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: Icon(icon, color: t.onPrimary, size: 18),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontFamily: 'Georgia',
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: t.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      'Day $currentDay of $totalDays',
+                      style: TextStyle(
+                        fontFamily: 'Georgia',
+                        fontSize: 12,
+                        color: t.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                'Continue →',
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: t.primary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: percent,
+              backgroundColor: t.progressBg,
+              valueColor: AlwaysStoppedAnimation<Color>(t.primary),
+              minHeight: 5,
             ),
           ),
         ],
@@ -573,16 +868,16 @@ class _BackgroundPainter extends CustomPainter {
   bool shouldRepaint(_BackgroundPainter old) => old.t != t;
 }
 
-// ── Entry card ────────────────────────────────────────────────────────────────
+// ── Quick tile ────────────────────────────────────────────────────────────────
 
-class _EntryCard extends StatelessWidget {
+class _QuickTile extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
   final WaypointThemeData t;
   final VoidCallback onTap;
 
-  const _EntryCard({
+  const _QuickTile({
     required this.icon,
     required this.title,
     required this.subtitle,
@@ -595,11 +890,10 @@ class _EntryCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: double.infinity,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: t.cardBg.withValues(alpha: 0.78),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(color: t.cardBorder.withValues(alpha: 0.8)),
           boxShadow: [
             BoxShadow(
@@ -609,47 +903,41 @@ class _EntryCard extends StatelessWidget {
             ),
           ],
         ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              padding: const EdgeInsets.all(9),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [t.primary, t.secondary],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(icon, color: t.onPrimary, size: 20),
+              child: Icon(icon, color: t.onPrimary, size: 22),
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontFamily: 'Georgia',
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: t.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontFamily: 'Georgia',
-                      fontSize: 12,
-                      color: t.textSecondary,
-                    ),
-                  ),
-                ],
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: TextStyle(
+                fontFamily: 'Georgia',
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: t.textPrimary,
               ),
             ),
-            Icon(Icons.chevron_right, color: t.textHint, size: 20),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: TextStyle(
+                fontFamily: 'Georgia',
+                fontSize: 12,
+                color: t.textSecondary,
+                height: 1.35,
+              ),
+            ),
           ],
         ),
       ),
