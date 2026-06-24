@@ -442,6 +442,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _charQueue.clear();
       _apiStreamComplete = false;
       _streamingMessage = null;
+      final receivedContent = aiMessage.text.isNotEmpty;
       if (mounted) {
         setState(() {
           if (aiMessage.text.isEmpty) aiMessage.text = _friendlyErrorMessage(e);
@@ -449,6 +450,18 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         });
       }
       if (_conversationHistory.isNotEmpty) _conversationHistory.removeLast();
+      // The message was charged against the daily quota before sending (to
+      // survive app-kill). If the request failed before any answer streamed,
+      // hand that message back so a network blip doesn't cost a free user one
+      // of their two daily conversations for nothing.
+      if (!isPro && !isDay1 && !receivedContent) {
+        await MessageLimitService.recordMessageRefund();
+        final count = await MessageLimitService.refreshAndGetCount();
+        if (mounted) {
+          setState(() =>
+              _isLimited = count >= MessageLimitService.dailyFreeLimit);
+        }
+      }
       _scrollToBottom();
     }
   }
@@ -495,7 +508,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       request.body = jsonEncode({
         'model': kAnthropicModel,
-        'max_tokens': 1024,
+        'max_tokens': 2048,
         'stream': true,
         'system': _buildSystemPrompt(denomination),
         'messages': historyToSend,
@@ -512,39 +525,32 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         throw Exception('api_error_${streamedResponse.statusCode}');
       }
 
-      final lineBuffer = StringBuffer();
-
-      streamLoop:
-      await for (final chunk in streamedResponse.stream) {
-        final decoded = utf8.decode(chunk);
-        for (final char in decoded.characters) {
-          if (char == '\n') {
-            final line = lineBuffer.toString().trim();
-            lineBuffer.clear();
-
-            if (line.startsWith('data: ')) {
-              final data = line.substring(6);
-              if (data == '[DONE]') break streamLoop;
-              try {
-                final json = jsonDecode(data);
-                if (json['type'] == 'message_stop') break streamLoop;
-                if (json['type'] == 'content_block_delta') {
-                  final delta = json['delta'];
-                  if (delta != null && delta['type'] == 'text_delta') {
-                    final text = delta['text'] as String? ?? '';
-                    if (text.isNotEmpty) {
-                      onChunk(text);
-                      fullBuffer.write(text);
-                    }
-                  }
-                }
-              } catch (_) {
-                // skip malformed lines
+      // Decode the byte stream with the stateful UTF-8 decoder + LineSplitter so
+      // multi-byte characters (smart quotes, em-dashes, emoji) that straddle a
+      // network chunk boundary are reassembled correctly. Calling utf8.decode()
+      // on each raw chunk throws on a split sequence and aborts the response.
+      await for (final line in streamedResponse.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        final trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        final data = trimmed.substring(6);
+        if (data == '[DONE]') break;
+        try {
+          final json = jsonDecode(data);
+          if (json['type'] == 'message_stop') break;
+          if (json['type'] == 'content_block_delta') {
+            final delta = json['delta'];
+            if (delta != null && delta['type'] == 'text_delta') {
+              final text = delta['text'] as String? ?? '';
+              if (text.isNotEmpty) {
+                onChunk(text);
+                fullBuffer.write(text);
               }
             }
-          } else {
-            lineBuffer.write(char);
           }
+        } catch (_) {
+          // skip malformed lines
         }
       }
     } finally {
@@ -623,10 +629,12 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 _charQueue.clear();
                 _apiStreamComplete = false;
                 _streamingMessage = null;
+                widget.prefs.remove(_kSessionKey);
                 setState(() {
                   _messages.clear();
                   _conversationHistory.clear();
                   _isLoading = false;
+                  _followUpChips = [];
                 });
               },
               child: Text(
@@ -665,7 +673,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ),
         actions: [
           GestureDetector(
-            onTap: _clearConversation,
+            onTap: _isLoading ? null : _clearConversation,
             child: Container(
               margin: const EdgeInsets.only(right: 16),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),

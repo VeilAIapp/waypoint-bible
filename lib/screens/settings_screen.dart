@@ -453,7 +453,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 32),
           Center(
             child: Text(
-              'Waypoint • Version 1.1.0',
+              'Waypoint • Version 1.2.0',
               style: TextStyle(
                 fontFamily: 'Georgia',
                 fontSize: 13,

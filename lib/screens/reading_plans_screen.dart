@@ -62,8 +62,10 @@ class _ReadingPlansScreenState extends State<ReadingPlansScreen> {
               _saveProgress();
               if (day >= plan.totalDays) {
                 final badges = widget.prefs.getStringList('earned_badges') ?? [];
-                badges.add('plan_${plan.id}');
-                widget.prefs.setStringList('earned_badges', badges);
+                if (!badges.contains('plan_${plan.id}')) {
+                  badges.add('plan_${plan.id}');
+                  widget.prefs.setStringList('earned_badges', badges);
+                }
               }
             },
           ),

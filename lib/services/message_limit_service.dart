@@ -120,4 +120,21 @@ class MessageLimitService {
             .clamp(0, 9999);
     await _storage.write(key: _keyDailyCount, value: (count + 1).toString());
   }
+
+  /// Gives back one consumed message — call only when a send recorded via
+  /// [recordMessageSent] failed before producing any response. Decrements
+  /// today's count (clamped at 0). No-op if the calendar day has already rolled
+  /// over since the message was recorded, so it can never reduce a fresh day's
+  /// count below zero or undo a legitimately-consumed earlier day.
+  static Future<void> recordMessageRefund() async {
+    final today = _today();
+    final countDate =
+        await _storage.read(key: _keyCountDate) ?? '0000-00-00';
+    if (countDate != today) return;
+    final count =
+        (int.tryParse(await _storage.read(key: _keyDailyCount) ?? '0') ?? 0)
+            .clamp(0, 9999);
+    if (count <= 0) return;
+    await _storage.write(key: _keyDailyCount, value: (count - 1).toString());
+  }
 }

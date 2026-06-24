@@ -89,37 +89,36 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (mounted) setState(() => _aiLoading = false);
       _startCharTimer();
 
-      final lineBuffer = StringBuffer();
-      streamLoop:
-      await for (final chunk in streamedResponse.stream) {
-        final decoded = utf8.decode(chunk);
-        for (final char in decoded.characters) {
-          if (char == '\n') {
-            final line = lineBuffer.toString().trim();
-            lineBuffer.clear();
-            if (line.startsWith('data: ')) {
-              final data = line.substring(6);
-              if (data == '[DONE]') break streamLoop;
-              try {
-                final json = jsonDecode(data);
-                if (json['type'] == 'message_stop') break streamLoop;
-                if (json['type'] == 'content_block_delta') {
-                  final delta = json['delta'];
-                  if (delta != null && delta['type'] == 'text_delta') {
-                    final text = delta['text'] as String? ?? '';
-                    if (text.isNotEmpty) _charQueue.addAll(text.characters);
-                  }
-                }
-              } catch (_) {}
+      // Stateful UTF-8 decode + line splitting so multi-byte characters split
+      // across a network chunk don't throw mid-stream (see chat_screen).
+      await for (final line in streamedResponse.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        final trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        final data = trimmed.substring(6);
+        if (data == '[DONE]') break;
+        try {
+          final json = jsonDecode(data);
+          if (json['type'] == 'message_stop') break;
+          if (json['type'] == 'content_block_delta') {
+            final delta = json['delta'];
+            if (delta != null && delta['type'] == 'text_delta') {
+              final text = delta['text'] as String? ?? '';
+              if (text.isNotEmpty) _charQueue.addAll(text.characters);
             }
-          } else {
-            lineBuffer.write(char);
           }
-        }
+        } catch (_) {}
       }
 
       _apiStreamComplete = true;
     } catch (e) {
+      // Stop the typewriter and drop any half-queued text before showing the
+      // fallback, so leftover queued characters don't append onto it and the
+      // periodic timer doesn't leak (it only self-cancels on a clean finish).
+      _charTimer?.cancel();
+      _charTimer = null;
+      _charQueue.clear();
       if (mounted) {
         setState(() {
           _aiLoading = false;

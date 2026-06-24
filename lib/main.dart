@@ -8,6 +8,7 @@ import 'screens/bible_screen.dart';
 import 'screens/hub_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/splash_screen.dart';
+import 'screens/pro_gate_screen.dart';
 import 'services/message_limit_service.dart';
 import 'services/revenue_cat_service.dart';
 import 'services/notification_service.dart';
@@ -28,6 +29,10 @@ void main() async {
 }
 
 Future<void> _initServices(SharedPreferences prefs) async {
+  // Sync widget verse immediately so home screen and widget always agree.
+  try {
+    await WidgetUpdateService.pushVerseAndStreak(prefs);
+  } catch (_) {}
   try {
     await NotificationService.initialize();
     await NotificationService.requestPermission();
@@ -41,8 +46,8 @@ Future<void> _initServices(SharedPreferences prefs) async {
     await NotificationService.showLockScreen();
   } catch (_) {}
   await Future.delayed(const Duration(seconds: 2));
-  await RevenueCatService.initialize();
-  // Push today's verse, streak, and Pro status to all home screen widgets.
+  await RevenueCatService.initialize(prefs);
+  // Full update: also pushes Pro entitlement status to the widget.
   try {
     await WidgetUpdateService.updateAll(prefs);
   } catch (_) {}
@@ -190,9 +195,14 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         onNavigateToSearch: () => Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => SearchScreen(
-              prefs: widget.prefs,
-              onPromptSelected: (prompt) => _openChat(prompt),
+            // AI-powered search calls the paid API, so gate it behind Pro (the
+            // paywall lists Search as a Pro feature). Without this wrapper every
+            // free user could run unlimited Opus searches billed to us.
+            builder: (_) => ProGateScreen(
+              child: SearchScreen(
+                prefs: widget.prefs,
+                onPromptSelected: (prompt) => _openChat(prompt),
+              ),
             ),
           ),
         ),

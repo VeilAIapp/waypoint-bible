@@ -33,7 +33,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _streak = 0;
   bool _welcomeBack = false;
   late Map<String, String> _todayVerse;
@@ -66,9 +66,28 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _todayVerse = getDailyVerse();
     _selectPrompts();
     _updateStreak();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // HomeScreen lives in an IndexedStack and is built once per launch, so
+    // initState only runs on cold start. Recompute on resume so a user who
+    // leaves the app open across midnight still gets credit for the new day
+    // (and today's verse refreshes) instead of silently losing their streak.
+    if (state == AppLifecycleState.resumed) {
+      if (mounted) setState(() => _todayVerse = getDailyVerse());
+      _updateStreak();
+    }
   }
 
   String _greeting() {

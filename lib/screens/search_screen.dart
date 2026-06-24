@@ -128,6 +128,12 @@ Choose verses that are:
                 .toList();
             _loading = false;
           });
+        } else {
+          // 200 but no usable text block — reset loading instead of spinning forever.
+          setState(() {
+            _error = 'Something went wrong. Please try again.';
+            _loading = false;
+          });
         }
       } else {
         setState(() {
@@ -144,11 +150,12 @@ Choose verses that are:
   }
 
   void _discuss(VerseResult verse) {
-    widget.onPromptSelected(
-      'I just searched for "$_lastQuery" and found ${verse.reference}. '
-      '"${verse.text}" — can you help me go deeper into this verse? '
-      'What is the context, what does it mean, and how does it apply to my life?',
-    );
+    final prompt =
+        'I just searched for "$_lastQuery" and found ${verse.reference}. '
+        '"${verse.text}" — can you help me go deeper into this verse? '
+        'What is the context, what does it mean, and how does it apply to my life?';
+    Navigator.of(context).pop();
+    widget.onPromptSelected(prompt);
   }
 
   @override

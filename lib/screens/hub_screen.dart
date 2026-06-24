@@ -134,7 +134,11 @@ class _HubScreenState extends State<HubScreen> {
     final t = WaypointTheme.of(context);
     final streak = widget.prefs.getInt('streak') ?? 0;
     final chatCount = widget.prefs.getInt('chat_count') ?? 0;
-    final earnedBadges = widget.prefs.getStringList('earned_badges') ?? [];
+    // Count earned badges the same way Journey does — only ids defined in
+    // kAllBadges, and including milestone badges auto-derived from streak/chat/
+    // setup — so this stat matches the Journey screen even before it's opened.
+    final earnedIds = earnedBadgeIds(widget.prefs);
+    final badgeCount = kAllBadges.where((b) => earnedIds.contains(b.id)).length;
     final journalCount = (widget.prefs.getStringList('journal_entries') ?? []).length;
 
     return Scaffold(
@@ -176,7 +180,7 @@ class _HubScreenState extends State<HubScreen> {
                       const SizedBox(height: 12),
                       Row(
                         children: [
-                          _StatCard(label: 'Badges', value: '${earnedBadges.length}', icon: Icons.star_outline, t: t),
+                          _StatCard(label: 'Badges', value: '$badgeCount', icon: Icons.star_outline, t: t),
                           const SizedBox(width: 12),
                           _StatCard(label: 'Journal', value: '$journalCount', icon: Icons.book_outlined, t: t, onTap: () => _push(context, JournalScreen(prefs: widget.prefs))),
                         ],

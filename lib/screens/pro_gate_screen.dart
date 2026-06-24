@@ -23,12 +23,10 @@ class _ProGateScreenState extends State<ProGateScreen> {
   }
 
   Future<void> _check() async {
-    bool isPro;
-    try {
-      isPro = await RevenueCatService.isProUser();
-    } catch (_) {
-      isPro = true; // fail open on network error
-    }
+    // isProUser() never throws — on a network/timeout failure it returns the
+    // last confirmed entitlement (cached in RevenueCatService), so a paying
+    // user keeps access offline without us blanket-granting Pro on error.
+    final isPro = await RevenueCatService.isProUser();
     if (mounted) setState(() { _loading = false; _isPro = isPro; });
   }
 

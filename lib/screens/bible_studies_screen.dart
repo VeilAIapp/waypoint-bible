@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../data/bible_studies.dart';
+import '../services/haptic_service.dart';
+import '../services/review_service.dart';
 import '../theme/app_theme.dart';
 
 class BibleStudiesScreen extends StatefulWidget {
@@ -96,8 +98,10 @@ class _BibleStudiesScreenState extends State<BibleStudiesScreen> {
                           final badges = widget.prefs
                                   .getStringList('earned_badges') ??
                               [];
-                          badges.add('study_${study.id}');
-                          widget.prefs.setStringList('earned_badges', badges);
+                          if (!badges.contains('study_${study.id}')) {
+                            badges.add('study_${study.id}');
+                            widget.prefs.setStringList('earned_badges', badges);
+                          }
                         }
                       },
                     ),
@@ -318,10 +322,119 @@ class _StudyDetailScreenState extends State<StudyDetailScreen> {
   StudyDay get _today => widget.study.days[_currentDay - 1];
 
   void _completeDay() {
+    HapticService.medium();
+    final wasLastDay = _currentDay == widget.study.totalDays - 1;
     if (_currentDay < widget.study.totalDays) {
       setState(() => _currentDay++);
     }
     widget.onProgressUpdate(_currentDay);
+    if (wasLastDay) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showCompletion());
+    }
+  }
+
+  void _showCompletion() {
+    if (!mounted) return;
+    ReviewService.maybeRequestAfterPlanCompletion(widget.prefs);
+    final t = WaypointTheme.of(context);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.all(28),
+          decoration: BoxDecoration(
+            color: t.cardBg,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: t.primary, width: 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: t.primary.withValues(alpha: 0.2),
+                blurRadius: 30,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [t.primary, t.secondary],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.emoji_events_rounded, color: t.onPrimary, size: 40),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Study Complete!',
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: t.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                widget.study.title,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 15,
+                  color: t.primary,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'You worked through every day of this study. Well done.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 14,
+                  color: t.textSecondary,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 24),
+              GestureDetector(
+                onTap: () => Navigator.pop(ctx),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [t.primary, t.secondary],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Center(
+                    child: Text(
+                      'Well done ✦',
+                      style: TextStyle(
+                        fontFamily: 'Georgia',
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: t.onPrimary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _reflect() {

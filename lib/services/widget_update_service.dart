@@ -27,6 +27,21 @@ class WidgetUpdateService {
     await _broadcastUpdate();
   }
 
+  /// Fast update: pushes verse + streak without waiting for RevenueCat.
+  /// Call immediately on app open so the widget shows today's verse right away.
+  static Future<void> pushVerseAndStreak(SharedPreferences prefs) async {
+    final verse = getDailyVerse();
+    final streak = prefs.getInt('streak') ?? 0;
+    try {
+      await Future.wait([
+        HomeWidget.saveWidgetData<String>('verse_text', verse['text'] ?? ''),
+        HomeWidget.saveWidgetData<String>('verse_ref', verse['ref'] ?? ''),
+        HomeWidget.saveWidgetData<int>('streak', streak),
+      ]);
+      await _broadcastUpdate();
+    } catch (_) {}
+  }
+
   /// Lightweight update: pushes just the streak to the widget without hitting
   /// RevenueCat. Call immediately after HomeScreen writes the new streak value
   /// to SharedPreferences so the widget shows the correct count on every open.

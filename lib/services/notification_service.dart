@@ -23,7 +23,18 @@ class NotificationService {
     }
 
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    await _plugin.initialize(const InitializationSettings(android: androidInit));
+    // iOS needs Darwin settings or notifications never initialise (and the
+    // daily verse silently never fires). Permissions are requested explicitly
+    // in requestPermission() rather than at init.
+    const iosInit = DarwinInitializationSettings(
+      requestAlertPermission: false,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
+    );
+    await _plugin.initialize(const InitializationSettings(
+      android: androidInit,
+      iOS: iosInit,
+    ));
   }
 
   static Future<void> requestPermission() async {
@@ -31,6 +42,10 @@ class NotificationService {
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
   static Future<void> scheduleDaily(int hour, int minute) async {
@@ -52,6 +67,7 @@ class NotificationService {
         importance: Importance.defaultImportance,
         priority: Priority.defaultPriority,
       ),
+      iOS: DarwinNotificationDetails(),
     );
 
     for (int i = 0; i < _scheduledDays; i++) {

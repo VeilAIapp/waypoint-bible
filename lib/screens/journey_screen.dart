@@ -40,6 +40,28 @@ const List<Badge> kAllBadges = [
   Badge(id: 'book_genesis',      iconData: Icons.public,                name: 'From the Beginning',   description: 'Read Genesis',               category: 'Books'),
 ];
 
+/// Full set of earned badge ids: the explicitly-stored badges (highlight,
+/// journal, book completion, etc.) plus the milestone badges derived from the
+/// user's current streak / conversation count / setup. Pure read — does not
+/// persist. Shared by Journey and the hub "Badges" stat so their counts always
+/// agree, even before the Journey screen has run its auto-earn pass.
+Set<String> earnedBadgeIds(SharedPreferences prefs) {
+  final ids = (prefs.getStringList('earned_badges') ?? []).toSet();
+  final streak = prefs.getInt('streak') ?? 0;
+  final chatCount = prefs.getInt('chat_count') ?? 0;
+  final denomination = prefs.getString('user_denomination');
+  if (streak >= 3) ids.add('streak_3');
+  if (streak >= 7) ids.add('streak_7');
+  if (streak >= 30) ids.add('streak_30');
+  if (streak >= 100) ids.add('streak_100');
+  if (streak >= 365) ids.add('streak_365');
+  if (chatCount >= 1) ids.add('chat_1');
+  if (chatCount >= 10) ids.add('chat_10');
+  if (chatCount >= 50) ids.add('chat_50');
+  if (denomination != null) ids.add('setup_denomination');
+  return ids;
+}
+
 // ── Journal entry model ───────────────────────────────────────────────────────
 
 class JournalEntry {
@@ -98,20 +120,9 @@ class _JourneyScreenState extends State<JourneyScreen> {
   }
 
   void _checkAutoEarnBadges() {
-    final streak = widget.prefs.getInt('streak') ?? 0;
-    final chatCount = widget.prefs.getInt('chat_count') ?? 0;
-    final denomination = widget.prefs.getString('user_denomination');
-
-    if (streak >= 3) _earnedBadgeIds.add('streak_3');
-    if (streak >= 7) _earnedBadgeIds.add('streak_7');
-    if (streak >= 30) _earnedBadgeIds.add('streak_30');
-    if (streak >= 100) _earnedBadgeIds.add('streak_100');
-    if (streak >= 365) _earnedBadgeIds.add('streak_365');
-    if (chatCount >= 1) _earnedBadgeIds.add('chat_1');
-    if (chatCount >= 10) _earnedBadgeIds.add('chat_10');
-    if (chatCount >= 50) _earnedBadgeIds.add('chat_50');
-    if (denomination != null) _earnedBadgeIds.add('setup_denomination');
-
+    // Recompute the full earned set (stored + auto-earned milestones) via the
+    // shared helper so Journey and the hub badge count can never diverge.
+    _earnedBadgeIds = earnedBadgeIds(widget.prefs);
     widget.prefs.setStringList('earned_badges', _earnedBadgeIds.toList());
   }
 
