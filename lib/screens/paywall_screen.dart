@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:purchases_ui_flutter/purchases_ui_flutter.dart';
+import '../services/analytics_service.dart';
 
 class PaywallScreen extends StatefulWidget {
   final VoidCallback onContinueFree;
@@ -26,10 +28,15 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   Future<void> _present() async {
     try {
+      AnalyticsService.instance.paywallViewed();
       final result = await RevenueCatUI.presentPaywall(displayCloseButton: true);
       if (!mounted) return;
 
       if (result == PaywallResult.purchased || result == PaywallResult.restored) {
+        // Identify on both; only a purchase is a new trial.
+        unawaited(AnalyticsService.instance.onProUnlocked(
+          startedTrial: result == PaywallResult.purchased,
+        ));
         if (widget.onProUnlocked != null) {
           widget.onProUnlocked!();
           if (!widget.popOnProUnlocked) {

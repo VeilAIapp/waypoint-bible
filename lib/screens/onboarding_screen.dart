@@ -6,16 +6,19 @@ import 'package:http/http.dart' as http;
 import 'package:purchases_ui_flutter/purchases_ui_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../constants.dart';
+import '../services/analytics_service.dart';
+import '../services/companion_prompt.dart';
 import '../theme/app_theme.dart';
 
-const String _onboardingVerse = 'John 1:1';
-const String _onboardingVerseText =
-    '"In the beginning was the Word, and the Word was with God, and the Word was God."';
-
-const String _onboardingPrompt =
-    'Explain John 1:1 in a warm, accessible way. Cover what "the Word" (Logos) means in Greek '
-    'and what it means personally for someone reading it today. '
-    'Keep it to 2 short paragraphs maximum. Be warm — like a wise friend. No headers or bullet points.';
+// Felt-need prompts — tapping one submits it immediately as the user's first
+// real question. Chosen to surface a genuine reason to keep talking, not a
+// scripted demo, so the "aha moment" is personal rather than canned.
+const List<String> _kFeltNeedPrompts = [
+  "I'm anxious about something",
+  'I feel distant from God',
+  'Explain a verse that confuses me',
+  "I haven't opened my Bible in years",
+];
 
 class OnboardingScreen extends StatefulWidget {
   final SharedPreferences prefs;
@@ -35,10 +38,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController();
   int _currentPage = 0;
 
-  // Page 2 — AI explanation
-  String _aiExplanation = '';
-  bool _aiLoading = true;
-  bool _aiDone = false;
+  // Page 2 — the user's first real question, and the streamed answer.
+  final TextEditingController _questionController = TextEditingController();
+  bool _questionAsked = false;
+  String _userQuestion = '';
+  String _answerText = '';
+  bool _answerLoading = false;
+  bool _answerDone = false;
+  bool _answerFailed = false;
   final List<String> _charQueue = [];
   Timer? _charTimer;
   bool _apiStreamComplete = false;
@@ -46,23 +53,63 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   // Page 3 — Setup
   String? _selectedDenomination;
 
+  // Maps each PageView index to its funnel step name. Index 1 is now the
+  // user's first real question (the "aha moment" moved here so it happens
+  // fast, on their own felt need); index 2 is the denomination step (we track
+  // that the step was viewed, never the chosen denomination value).
+  static const List<String> _stepNames = [
+    'welcome',
+    'first_question',
+    'denomination',
+    'trial',
+  ];
+
+  void _trackStep(int page) {
+    if (page >= 0 && page < _stepNames.length) {
+      AnalyticsService.instance.onboardingStepViewed(_stepNames[page]);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    _fetchAiExplanation();
+    _trackStep(0);
   }
 
   @override
   void dispose() {
     _charTimer?.cancel();
     _pageController.dispose();
+    _questionController.dispose();
     super.dispose();
   }
 
-  // ── AI streaming ────────────────────────────────────────────────────────────
+  // ── First-question AI streaming ──────────────────────────────────────────────
 
-  Future<void> _fetchAiExplanation() async {
+  /// Submits [question] as the user's first real Companion question. No
+  /// denomination has been chosen yet at this point, so the base system
+  /// prompt is used — matching how a brand-new free user's first chat message
+  /// behaves before ever visiting Settings.
+  Future<void> _askQuestion(String question) async {
+    if (_questionAsked) return;
+    final trimmed = question.trim();
+    if (trimmed.isEmpty) return;
+
+    setState(() {
+      _questionAsked = true;
+      _userQuestion = trimmed;
+      _answerLoading = true;
+      _answerFailed = false;
+      _answerText = '';
+      _answerDone = false;
+    });
+
+    // This is a real, user-initiated question — it's the same funnel moment
+    // chat_screen fires later for a returning user, guarded to fire once ever.
+    AnalyticsService.instance.firstQuestionAsked();
+
     final client = http.Client();
+    final fullBuffer = StringBuffer();
     try {
       final request = http.Request('POST', Uri.parse(kAnthropicApiUrl));
       request.headers.addAll({
@@ -72,10 +119,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       });
       request.body = jsonEncode({
         'model': kAnthropicModel,
-        'max_tokens': 350,
+        'max_tokens': 800,
         'stream': true,
+        'system': buildCompanionSystemPrompt(null),
         'messages': [
-          {'role': 'user', 'content': _onboardingPrompt}
+          {'role': 'user', 'content': trimmed}
         ],
       });
 
@@ -86,7 +134,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         throw Exception('API error ${streamedResponse.statusCode}');
       }
 
-      if (mounted) setState(() => _aiLoading = false);
+      if (mounted) setState(() => _answerLoading = false);
       _startCharTimer();
 
       // Stateful UTF-8 decode + line splitting so multi-byte characters split
@@ -94,9 +142,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await for (final line in streamedResponse.stream
           .transform(utf8.decoder)
           .transform(const LineSplitter())) {
-        final trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-        final data = trimmed.substring(6);
+        final trimmedLine = line.trim();
+        if (!trimmedLine.startsWith('data: ')) continue;
+        final data = trimmedLine.substring(6);
         if (data == '[DONE]') break;
         try {
           final json = jsonDecode(data);
@@ -105,30 +153,39 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             final delta = json['delta'];
             if (delta != null && delta['type'] == 'text_delta') {
               final text = delta['text'] as String? ?? '';
-              if (text.isNotEmpty) _charQueue.addAll(text.characters);
+              if (text.isNotEmpty) {
+                _charQueue.addAll(text.characters);
+                fullBuffer.write(text);
+              }
             }
           }
         } catch (_) {}
       }
 
       _apiStreamComplete = true;
+      AnalyticsService.instance.answerReceived(success: true);
+      // Persist as the start of the Companion conversation so it's still
+      // there the first time the user opens the Companion tab.
+      widget.prefs.setString(
+        kChatSessionKey,
+        jsonEncode([
+          {'role': 'user', 'content': trimmed},
+          {'role': 'assistant', 'content': fullBuffer.toString()},
+        ]),
+      );
     } catch (e) {
-      // Stop the typewriter and drop any half-queued text before showing the
-      // fallback, so leftover queued characters don't append onto it and the
-      // periodic timer doesn't leak (it only self-cancels on a clean finish).
       _charTimer?.cancel();
       _charTimer = null;
       _charQueue.clear();
+      AnalyticsService.instance.answerReceived(success: false);
       if (mounted) {
         setState(() {
-          _aiLoading = false;
-          _aiExplanation =
-              'John opens his gospel not with a birth story, but with eternity itself. '
-              '"The Word" — in Greek, Logos — was a concept his readers already knew: '
-              'the divine reason that holds all things together. John is saying that this Logos, '
-              'this eternal creative force, became a person. Became Jesus. '
-              'This is the most audacious claim in all of Scripture — and it changes everything.';
-          _aiDone = true;
+          _answerLoading = false;
+          _answerFailed = true;
+          _answerText =
+              "Couldn't reach your Companion just now — but that's alright. "
+              "You can pick up right where you left off once you're in the app.";
+          _answerDone = true;
         });
       }
     } finally {
@@ -143,7 +200,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           _apiStreamComplete = false;
           _charTimer?.cancel();
           _charTimer = null;
-          setState(() => _aiDone = true);
+          setState(() => _answerDone = true);
         }
         return;
       }
@@ -151,7 +208,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       for (int i = 0; i < 3 && _charQueue.isNotEmpty; i++) {
         buf.write(_charQueue.removeAt(0));
       }
-      if (mounted) setState(() => _aiExplanation += buf.toString());
+      if (mounted) setState(() => _answerText += buf.toString());
     });
   }
 
@@ -164,6 +221,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         curve: Curves.easeInOut,
       );
       setState(() => _currentPage++);
+      _trackStep(_currentPage);
     }
   }
 
@@ -173,11 +231,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (_trialLoading) return;
     setState(() => _trialLoading = true);
     try {
+      AnalyticsService.instance.paywallViewed();
       final result =
           await RevenueCatUI.presentPaywall(displayCloseButton: true);
       if (!mounted) return;
       if (result == PaywallResult.purchased ||
           result == PaywallResult.restored) {
+        // Identify PostHog with the RevenueCat ID on BOTH purchase and restore
+        // (fire-and-forget so it never delays entering the app); only a purchase
+        // fires the trial_started funnel event.
+        unawaited(AnalyticsService.instance.onProUnlocked(
+          startedTrial: result == PaywallResult.purchased,
+        ));
         _complete();
       } else {
         // Dismissed without purchasing — stay on the page so they can
@@ -195,6 +260,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       widget.prefs.setString('user_denomination', _selectedDenomination!);
     }
     widget.prefs.setBool('onboarding_complete', true);
+    AnalyticsService.instance.onboardingCompleted();
     widget.onComplete();
   }
 
@@ -236,7 +302,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     physics: const NeverScrollableScrollPhysics(),
                     children: [
                       _buildWelcomePage(t),
-                      _buildAhaPage(t),
+                      _buildFirstQuestionPage(t),
                       _buildSetupPage(t),
                       _buildTrialPage(t),
                     ],
@@ -312,9 +378,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
-  // ── Page 2: Aha Moment ──────────────────────────────────────────────────────
+  // ── Page 2: First real question ──────────────────────────────────────────────
 
-  Widget _buildAhaPage(WaypointThemeData t) {
+  Widget _buildFirstQuestionPage(WaypointThemeData t) {
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       child: Column(
@@ -322,106 +388,158 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         children: [
           const SizedBox(height: 8),
           Text(
-            'See what Waypoint can do',
+            _questionAsked ? 'Your Companion' : "What's on your mind?",
             style: TextStyle(
               fontFamily: 'Georgia',
-              fontSize: 13,
-              color: t.textSecondary,
-              letterSpacing: 0.5,
+              fontSize: 22,
               fontWeight: FontWeight.bold,
+              color: t.textPrimary,
             ),
           ),
-          const SizedBox(height: 16),
-
-          // Verse card
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [t.primary, t.secondary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [
-                BoxShadow(
-                  color: t.primary.withValues(alpha: 0.25),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
+          const SizedBox(height: 6),
+          Text(
+            _questionAsked
+                ? 'Ask anything, any time — this is what Waypoint is for.'
+                : 'Ask anything — a question, a struggle, a verse you don\'t understand.',
+            style: TextStyle(
+              fontFamily: 'Georgia',
+              fontSize: 14,
+              color: t.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 20),
+          if (!_questionAsked) ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _kFeltNeedPrompts
+                  .map((p) => GestureDetector(
+                        onTap: () => _askQuestion(p),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: t.cardBg,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: t.cardBorder),
+                          ),
+                          child: Text(
+                            p,
+                            style: TextStyle(
+                              fontFamily: 'Georgia',
+                              fontSize: 13,
+                              color: t.textPrimary,
+                            ),
+                          ),
+                        ),
+                      ))
+                  .toList(),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _questionController,
+                    maxLines: null,
+                    textCapitalization: TextCapitalization.sentences,
+                    style: TextStyle(fontFamily: 'Georgia', fontSize: 15, color: t.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'Or type your own question...',
+                      hintStyle: TextStyle(fontFamily: 'Georgia', color: t.textHint, fontSize: 14),
+                      filled: true,
+                      fillColor: t.inputFill,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                    ),
+                    onSubmitted: _askQuestion,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                GestureDetector(
+                  onTap: () => _askQuestion(_questionController.text),
+                  child: Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [t.primary, t.secondary],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.send_rounded, color: t.onPrimary, size: 20),
+                  ),
                 ),
               ],
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _onboardingVerseText,
+          ] else ...[
+            // User's question, as a bubble matching the Companion chat style.
+            Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.8),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [t.primary, t.secondary],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(18),
+                    topRight: Radius.circular(18),
+                    bottomLeft: Radius.circular(18),
+                    bottomRight: Radius.circular(4),
+                  ),
+                ),
+                child: Text(
+                  _userQuestion,
                   style: TextStyle(
                     fontFamily: 'Georgia',
+                    fontSize: 15,
+                    height: 1.5,
                     color: t.onPrimary,
-                    fontSize: 17,
-                    height: 1.6,
-                    fontStyle: FontStyle.italic,
                   ),
                 ),
-                const SizedBox(height: 10),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: t.onPrimary.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    _onboardingVerse,
-                    style: TextStyle(
-                      fontFamily: 'Georgia',
-                      color: t.onPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-
-          const SizedBox(height: 20),
-
-          // AI response area
-          Container(
-            width: double.infinity,
-            constraints: const BoxConstraints(minHeight: 120),
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: t.cardBg.withValues(alpha: 0.92),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: t.cardBorder),
-            ),
-            child: _aiLoading
-                ? _OnboardingDots()
-                : _aiExplanation.isEmpty
-                    ? _OnboardingDots()
-                    : Text(
-                        _aiExplanation,
-                        style: TextStyle(
-                          fontFamily: 'Georgia',
-                          fontSize: 15,
-                          color: t.textPrimary,
-                          height: 1.7,
-                        ),
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(minHeight: 120),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: t.cardBg.withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: t.cardBorder),
+              ),
+              child: _answerLoading || _answerText.isEmpty
+                  ? _OnboardingDots()
+                  : Text(
+                      _answerText,
+                      style: TextStyle(
+                        fontFamily: 'Georgia',
+                        fontSize: 15,
+                        color: _answerFailed ? t.textSecondary : t.textPrimary,
+                        height: 1.7,
+                        fontStyle: _answerFailed ? FontStyle.italic : FontStyle.normal,
                       ),
-          ),
-
-          const SizedBox(height: 28),
-
-          if (_aiDone)
-            _PrimaryButton(
-              label: 'This is incredible →',
-              onTap: _nextPage,
+                    ),
             ),
-
+            const SizedBox(height: 28),
+            if (_answerDone)
+              _PrimaryButton(
+                label: 'Continue →',
+                onTap: _nextPage,
+              ),
+          ],
           const SizedBox(height: 16),
         ],
       ),
@@ -438,45 +556,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         children: [
           const SizedBox(height: 8),
           Text(
-            'Make it yours',
+            'Want this tuned to your tradition?',
             style: TextStyle(
               fontFamily: 'Georgia',
-              fontSize: 26,
+              fontSize: 24,
               fontWeight: FontWeight.bold,
               color: t.textPrimary,
             ),
           ),
           const SizedBox(height: 6),
           Text(
-            'One quick question and you\'re in.',
+            'Totally optional — helps your Companion speak your language. Skip if you\'d rather not say.',
             style: TextStyle(
               fontFamily: 'Georgia',
-              fontSize: 15,
+              fontSize: 14,
               color: t.textSecondary,
+              height: 1.4,
             ),
           ),
 
-          const SizedBox(height: 28),
-
-          Text(
-            'Your faith background',
-            style: TextStyle(
-              fontFamily: 'Georgia',
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: t.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'If you\'re unsure, select Non-denominational to start.',
-            style: TextStyle(
-              fontFamily: 'Georgia',
-              fontSize: 13,
-              color: t.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 24),
 
           Wrap(
             spacing: 8,
@@ -484,7 +583,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             children: kDenominations.map((d) {
               final selected = _selectedDenomination == d;
               return GestureDetector(
-                onTap: () => setState(() => _selectedDenomination = d),
+                onTap: () => setState(
+                  () => _selectedDenomination = selected ? null : d,
+                ),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 8),
@@ -511,9 +612,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
           const SizedBox(height: 32),
 
+          // Always enabled — this step never blocks progress. Tapping a
+          // denomination chip a second time deselects it, so "Continue"
+          // with nothing selected is a legitimate, easy skip.
           _PrimaryButton(
-            label: 'Almost there →',
-            onTap: _selectedDenomination != null ? _nextPage : null,
+            label: 'Continue →',
+            onTap: _nextPage,
           ),
 
           const SizedBox(height: 16),
@@ -573,12 +677,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Free for 7 days, then \$6.99/month.',
+            'Free for 7 days, then \$69.99/year — our best value.\nMonthly also available at \$19.99/mo.',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: 'Georgia',
               fontSize: 13,
               color: t.textHint,
+              height: 1.5,
             ),
           ),
           const Spacer(),

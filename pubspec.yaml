@@ -48,6 +48,7 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   share_plus: ^10.1.4
   in_app_review: ^2.0.9
+  posthog_flutter: ^5.30.0
 
 dev_dependencies:
   flutter_test:

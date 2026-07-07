@@ -85,6 +85,19 @@ class RevenueCatService {
     }
   }
 
+  /// The RevenueCat app user ID for the current install (an anonymous
+  /// `$RCAnonymousID:...` unless a user was ever logged in). Used to stitch the
+  /// anonymous PostHog journey to the paying identity — it's the same ID
+  /// RevenueCat's own PostHog connector keys events on. Never throws.
+  static Future<String?> appUserId() async {
+    try {
+      return await Purchases.appUserID.timeout(const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint('appUserId error: $e');
+      return null;
+    }
+  }
+
   static Future<bool> restorePurchases() async {
     try {
       final info = await Purchases.restorePurchases()

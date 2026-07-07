@@ -9,6 +9,7 @@ import 'screens/hub_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/pro_gate_screen.dart';
+import 'services/analytics_service.dart';
 import 'services/message_limit_service.dart';
 import 'services/revenue_cat_service.dart';
 import 'services/notification_service.dart';
@@ -24,6 +25,9 @@ void main() async {
   await MessageLimitService.recordFirstOpenIfNeeded();
   final prefs = await SharedPreferences.getInstance();
   HapticService.init(prefs);
+  // Init analytics before runApp so it's ready before any event can fire.
+  // Guarded internally: a failure here never blocks app start.
+  await AnalyticsService.instance.init(prefs);
   runApp(WaypointApp(prefs: prefs));
   _initServices(prefs);
 }

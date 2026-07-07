@@ -103,7 +103,10 @@ Choose verses that are:
           'anthropic-version': '2023-06-01',
         },
         body: jsonEncode({
-          'model': kAnthropicModel,
+          // Structured verse retrieval with a rigid JSON output — doesn't need
+          // Sonnet's conversational depth, so Haiku is meaningfully cheaper
+          // for the same quality here.
+          'model': kAnthropicHaikuModel,
           'max_tokens': 1500,
           'messages': [
             {'role': 'user', 'content': prompt}

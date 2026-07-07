@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/analytics_service.dart';
 import '../services/haptic_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/notification_service.dart';
@@ -51,6 +52,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final isPro = await RevenueCatService.isProUser();
       if (mounted) setState(() => _isPro = isPro);
     } catch (_) {}
+  }
+
+  // Hidden internal-device toggle: tap the version label 7 times. Marks this
+  // device as internal so you and family testers can be filtered out of the
+  // funnel — works on any build, including a tester's App Store install where a
+  // --dart-define can't reach.
+  int _versionTaps = 0;
+  Future<void> _onVersionTapped() async {
+    _versionTaps++;
+    if (_versionTaps < 7) return;
+    _versionTaps = 0;
+    final newValue = !AnalyticsService.instance.isInternal;
+    await AnalyticsService.instance.setInternal(newValue);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          newValue
+              ? 'Internal mode ON — this device is excluded from the funnel.'
+              : 'Internal mode OFF — this device now counts in the funnel.',
+          style: const TextStyle(fontFamily: 'Georgia'),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _openPaywall() async {
@@ -452,12 +478,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 32),
           Center(
-            child: Text(
-              'Waypoint • Version 1.2.0',
-              style: TextStyle(
-                fontFamily: 'Georgia',
-                fontSize: 13,
-                color: t.textHint,
+            child: GestureDetector(
+              onTap: _onVersionTapped,
+              behavior: HitTestBehavior.opaque,
+              child: Text(
+                'Waypoint • Version 1.2.0',
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 13,
+                  color: t.textHint,
+                ),
               ),
             ),
           ),

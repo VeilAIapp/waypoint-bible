@@ -18,8 +18,10 @@ migrate_working_dir/
 *.iws
 .idea/
 
-# .vscode contains launch.json which holds the Anthropic API key — never commit.
-.vscode/
+# .vscode/launch.json holds the Anthropic + PostHog API keys via --dart-define — never commit it.
+# Ignore everything under .vscode EXCEPT the placeholder template that documents the setup.
+.vscode/*
+!.vscode/launch.json.example
 
 # Flutter/Dart/Pub related
 **/doc/api/

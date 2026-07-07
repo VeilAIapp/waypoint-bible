@@ -54,6 +54,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- PostHog is initialised manually in Dart (key comes from a build define,
+             so no token is hardcoded here). Disable native auto-init. -->
+        <meta-data
+            android:name="com.posthog.posthog.AUTO_INIT"
+            android:value="false" />
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"
             android:value="false" />

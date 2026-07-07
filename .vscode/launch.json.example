@@ -1,0 +1,18 @@
+{
+  "//": "Template. Copy this file to .vscode/launch.json (which is gitignored) and fill in real keys.",
+  "//keys": "ANTHROPIC_API_KEY is a real secret (billed) — never commit. POSTHOG_API_KEY is the publishable phc_ project key. POSTHOG_HOST defaults to the US cloud. WAYPOINT_INTERNAL=true marks this device internal so it can be filtered out of the funnel.",
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Waypoint (dev)",
+      "request": "launch",
+      "type": "dart",
+      "args": [
+        "--dart-define=ANTHROPIC_API_KEY=REPLACE_WITH_ANTHROPIC_KEY",
+        "--dart-define=POSTHOG_API_KEY=REPLACE_WITH_POSTHOG_PROJECT_KEY",
+        "--dart-define=POSTHOG_HOST=https://us.i.posthog.com",
+        "--dart-define=WAYPOINT_INTERNAL=true"
+      ]
+    }
+  ]
+}
