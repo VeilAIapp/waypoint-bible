@@ -415,7 +415,11 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       request.body = jsonEncode({
         'model': kAnthropicModel,
-        'max_tokens': 2048,
+        // The system prompt targets ~350-400 words (~550-600 tokens) per
+        // reply; 1024 gives headroom for a well-developed answer without
+        // leaving the door open to an 8000+ token runaway that used to take
+        // four "continue"s to even fully render.
+        'max_tokens': 1024,
         'stream': true,
         'system': buildCompanionSystemPrompt(denomination),
         'messages': historyToSend,

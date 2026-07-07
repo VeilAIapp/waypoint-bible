@@ -20,6 +20,18 @@ const List<String> _kFeltNeedPrompts = [
   "I haven't opened my Bible in years",
 ];
 
+/// One question/answer pair in the onboarding conversation. Onboarding allows
+/// real follow-ups (not just a single scripted exchange), so this is a small
+/// list rather than one flat set of fields.
+class _QAExchange {
+  final String question;
+  String answer = '';
+  bool loading = true;
+  bool done = false;
+  bool failed = false;
+  _QAExchange(this.question);
+}
+
 class OnboardingScreen extends StatefulWidget {
   final SharedPreferences prefs;
   final VoidCallback onComplete;
@@ -38,17 +50,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController();
   int _currentPage = 0;
 
-  // Page 2 — the user's first real question, and the streamed answer.
+  // Page 2 — the user's first real question, and any follow-ups. A real
+  // conversation, not a single scripted exchange — so it's a list.
   final TextEditingController _questionController = TextEditingController();
-  bool _questionAsked = false;
-  String _userQuestion = '';
-  String _answerText = '';
-  bool _answerLoading = false;
-  bool _answerDone = false;
-  bool _answerFailed = false;
+  final List<_QAExchange> _exchanges = [];
   final List<String> _charQueue = [];
   Timer? _charTimer;
   bool _apiStreamComplete = false;
+
+  /// True while an answer is currently streaming — blocks a second submit
+  /// and hides the input so it can't race with the in-flight request.
+  bool get _busy => _exchanges.isNotEmpty && !_exchanges.last.done;
 
   // Page 3 — Setup
   String? _selectedDenomination;
@@ -86,30 +98,39 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   // ── First-question AI streaming ──────────────────────────────────────────────
 
-  /// Submits [question] as the user's first real Companion question. No
-  /// denomination has been chosen yet at this point, so the base system
-  /// prompt is used — matching how a brand-new free user's first chat message
-  /// behaves before ever visiting Settings.
+  /// Submits [question] — the user's first real Companion question, or a
+  /// follow-up. No denomination has been chosen yet at this point, so the
+  /// base system prompt is used — matching how a brand-new free user's first
+  /// chat messages behave before ever visiting Settings. Prior exchanges on
+  /// this page are sent as history so a follow-up has real context.
   Future<void> _askQuestion(String question) async {
-    if (_questionAsked) return;
+    if (_busy) return;
     final trimmed = question.trim();
     if (trimmed.isEmpty) return;
 
+    final isFirst = _exchanges.isEmpty;
+    // Build history from exchanges so far, before adding the new one.
+    final priorMessages = <Map<String, String>>[
+      for (final e in _exchanges)
+        if (e.done && !e.failed) ...[
+          {'role': 'user', 'content': e.question},
+          {'role': 'assistant', 'content': e.answer},
+        ],
+    ];
+
+    final exchange = _QAExchange(trimmed);
     setState(() {
-      _questionAsked = true;
-      _userQuestion = trimmed;
-      _answerLoading = true;
-      _answerFailed = false;
-      _answerText = '';
-      _answerDone = false;
+      _exchanges.add(exchange);
+      _questionController.clear();
     });
 
-    // This is a real, user-initiated question — it's the same funnel moment
-    // chat_screen fires later for a returning user, guarded to fire once ever.
-    AnalyticsService.instance.firstQuestionAsked();
+    if (isFirst) {
+      // This is a real, user-initiated question — it's the same funnel moment
+      // chat_screen fires later for a returning user, guarded to fire once ever.
+      AnalyticsService.instance.firstQuestionAsked();
+    }
 
     final client = http.Client();
-    final fullBuffer = StringBuffer();
     try {
       final request = http.Request('POST', Uri.parse(kAnthropicApiUrl));
       request.headers.addAll({
@@ -122,9 +143,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         'max_tokens': 800,
         'stream': true,
         'system': buildCompanionSystemPrompt(null),
-        'messages': [
-          {'role': 'user', 'content': trimmed}
-        ],
+        'messages': [...priorMessages, {'role': 'user', 'content': trimmed}],
       });
 
       final streamedResponse =
@@ -134,8 +153,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         throw Exception('API error ${streamedResponse.statusCode}');
       }
 
-      if (mounted) setState(() => _answerLoading = false);
-      _startCharTimer();
+      if (mounted) setState(() => exchange.loading = false);
+      _startCharTimer(exchange);
 
       // Stateful UTF-8 decode + line splitting so multi-byte characters split
       // across a network chunk don't throw mid-stream (see chat_screen).
@@ -155,7 +174,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               final text = delta['text'] as String? ?? '';
               if (text.isNotEmpty) {
                 _charQueue.addAll(text.characters);
-                fullBuffer.write(text);
               }
             }
           }
@@ -164,15 +182,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
       _apiStreamComplete = true;
       AnalyticsService.instance.answerReceived(success: true);
-      // Persist as the start of the Companion conversation so it's still
-      // there the first time the user opens the Companion tab.
-      widget.prefs.setString(
-        kChatSessionKey,
-        jsonEncode([
-          {'role': 'user', 'content': trimmed},
-          {'role': 'assistant', 'content': fullBuffer.toString()},
-        ]),
-      );
     } catch (e) {
       _charTimer?.cancel();
       _charTimer = null;
@@ -180,12 +189,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       AnalyticsService.instance.answerReceived(success: false);
       if (mounted) {
         setState(() {
-          _answerLoading = false;
-          _answerFailed = true;
-          _answerText =
+          exchange.loading = false;
+          exchange.failed = true;
+          exchange.answer =
               "Couldn't reach your Companion just now — but that's alright. "
               "You can pick up right where you left off once you're in the app.";
-          _answerDone = true;
+          exchange.done = true;
         });
       }
     } finally {
@@ -193,14 +202,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
-  void _startCharTimer() {
+  void _startCharTimer(_QAExchange exchange) {
     _charTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
       if (_charQueue.isEmpty) {
         if (_apiStreamComplete && mounted) {
           _apiStreamComplete = false;
           _charTimer?.cancel();
           _charTimer = null;
-          setState(() => _answerDone = true);
+          setState(() => exchange.done = true);
+          _persistExchangesToChatSession();
         }
         return;
       }
@@ -208,8 +218,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       for (int i = 0; i < 3 && _charQueue.isNotEmpty; i++) {
         buf.write(_charQueue.removeAt(0));
       }
-      if (mounted) setState(() => _answerText += buf.toString());
+      if (mounted) setState(() => exchange.answer += buf.toString());
     });
+  }
+
+  /// Saves every successful exchange so far as the start of the Companion
+  /// conversation, so it's still there the first time the user opens the
+  /// Companion tab — including any follow-ups asked here, not just the first.
+  void _persistExchangesToChatSession() {
+    final history = <Map<String, String>>[
+      for (final e in _exchanges)
+        if (e.done && !e.failed) ...[
+          {'role': 'user', 'content': e.question},
+          {'role': 'assistant', 'content': e.answer},
+        ],
+    ];
+    if (history.isNotEmpty) {
+      widget.prefs.setString(kChatSessionKey, jsonEncode(history));
+    }
   }
 
   // ── Navigation ──────────────────────────────────────────────────────────────
@@ -381,6 +407,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   // ── Page 2: First real question ──────────────────────────────────────────────
 
   Widget _buildFirstQuestionPage(WaypointThemeData t) {
+    final hasExchanges = _exchanges.isNotEmpty;
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       child: Column(
@@ -388,7 +415,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         children: [
           const SizedBox(height: 8),
           Text(
-            _questionAsked ? 'Your Companion' : "What's on your mind?",
+            hasExchanges ? 'Your Companion' : "What's on your mind?",
             style: TextStyle(
               fontFamily: 'Georgia',
               fontSize: 22,
@@ -398,8 +425,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           ),
           const SizedBox(height: 6),
           Text(
-            _questionAsked
-                ? 'Ask anything, any time — this is what Waypoint is for.'
+            hasExchanges
+                ? 'Ask a follow-up, or continue whenever you\'re ready.'
                 : 'Ask anything — a question, a struggle, a verse you don\'t understand.',
             style: TextStyle(
               fontFamily: 'Georgia',
@@ -408,34 +435,108 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
           ),
           const SizedBox(height: 20),
-          if (!_questionAsked) ...[
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: _kFeltNeedPrompts
-                  .map((p) => GestureDetector(
-                        onTap: () => _askQuestion(p),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: t.cardBg,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: t.cardBorder),
-                          ),
-                          child: Text(
-                            p,
-                            style: TextStyle(
-                              fontFamily: 'Georgia',
-                              fontSize: 13,
-                              color: t.textPrimary,
+
+          if (!hasExchanges)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _kFeltNeedPrompts
+                    .map((p) => GestureDetector(
+                          onTap: () => _askQuestion(p),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: t.cardBg,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: t.cardBorder),
+                            ),
+                            child: Text(
+                              p,
+                              style: TextStyle(
+                                fontFamily: 'Georgia',
+                                fontSize: 13,
+                                color: t.textPrimary,
+                              ),
                             ),
                           ),
-                        ),
-                      ))
-                  .toList(),
+                        ))
+                    .toList(),
+              ),
+            ),
+
+          // Every exchange so far, in order — a real (if short) conversation,
+          // not a single scripted Q&A.
+          for (final e in _exchanges) ...[
+            Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [t.primary, t.secondary],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(18),
+                    topRight: Radius.circular(18),
+                    bottomLeft: Radius.circular(18),
+                    bottomRight: Radius.circular(4),
+                  ),
+                ),
+                child: Text(
+                  e.question,
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontSize: 15,
+                    height: 1.5,
+                    color: t.onPrimary,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(minHeight: 80),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: t.cardBg.withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: t.cardBorder),
+              ),
+              child: e.loading || e.answer.isEmpty
+                  ? _OnboardingDots()
+                  : Text(
+                      e.answer,
+                      style: TextStyle(
+                        fontFamily: 'Georgia',
+                        fontSize: 15,
+                        color: e.failed ? t.textSecondary : t.textPrimary,
+                        height: 1.7,
+                        fontStyle:
+                            e.failed ? FontStyle.italic : FontStyle.normal,
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          if (hasExchanges && !_busy) ...[
+            _PrimaryButton(
+              label: 'Continue →',
+              onTap: _nextPage,
             ),
             const SizedBox(height: 16),
+          ],
+
+          if (!_busy)
             Row(
               children: [
                 Expanded(
@@ -443,18 +544,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     controller: _questionController,
                     maxLines: null,
                     textCapitalization: TextCapitalization.sentences,
-                    style: TextStyle(fontFamily: 'Georgia', fontSize: 15, color: t.textPrimary),
+                    style: TextStyle(
+                        fontFamily: 'Georgia',
+                        fontSize: 15,
+                        color: t.textPrimary),
                     decoration: InputDecoration(
-                      hintText: 'Or type your own question...',
-                      hintStyle: TextStyle(fontFamily: 'Georgia', color: t.textHint, fontSize: 14),
+                      hintText: hasExchanges
+                          ? 'Ask a follow-up...'
+                          : 'Or type your own question...',
+                      hintStyle: TextStyle(
+                          fontFamily: 'Georgia',
+                          color: t.textHint,
+                          fontSize: 14),
                       filled: true,
                       fillColor: t.inputFill,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(24),
                         borderSide: BorderSide.none,
                       ),
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 14),
                     ),
                     onSubmitted: _askQuestion,
                   ),
@@ -473,73 +582,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       ),
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(Icons.send_rounded, color: t.onPrimary, size: 20),
+                    child: Icon(Icons.send_rounded,
+                        color: t.onPrimary, size: 20),
                   ),
                 ),
               ],
             ),
-          ] else ...[
-            // User's question, as a bubble matching the Companion chat style.
-            Align(
-              alignment: Alignment.centerRight,
-              child: Container(
-                constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * 0.8),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [t.primary, t.secondary],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(18),
-                    topRight: Radius.circular(18),
-                    bottomLeft: Radius.circular(18),
-                    bottomRight: Radius.circular(4),
-                  ),
-                ),
-                child: Text(
-                  _userQuestion,
-                  style: TextStyle(
-                    fontFamily: 'Georgia',
-                    fontSize: 15,
-                    height: 1.5,
-                    color: t.onPrimary,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              constraints: const BoxConstraints(minHeight: 120),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: t.cardBg.withValues(alpha: 0.92),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: t.cardBorder),
-              ),
-              child: _answerLoading || _answerText.isEmpty
-                  ? _OnboardingDots()
-                  : Text(
-                      _answerText,
-                      style: TextStyle(
-                        fontFamily: 'Georgia',
-                        fontSize: 15,
-                        color: _answerFailed ? t.textSecondary : t.textPrimary,
-                        height: 1.7,
-                        fontStyle: _answerFailed ? FontStyle.italic : FontStyle.normal,
-                      ),
-                    ),
-            ),
-            const SizedBox(height: 28),
-            if (_answerDone)
-              _PrimaryButton(
-                label: 'Continue →',
-                onTap: _nextPage,
-              ),
-          ],
+
           const SizedBox(height: 16),
         ],
       ),
